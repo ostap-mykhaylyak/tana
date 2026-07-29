@@ -94,8 +94,32 @@ tana --version
 /var/lib/tana/index.db   the object index
 /var/log/tana/           tana.log, access.log, transfer.log
 /run/tana/tana.sock      control socket behind --status
-/srv/tana/               blobs and journal (store role, configurable)
+/srv/tana/blobs/ab/cd/…  blobs, named after their sha256
+/srv/tana/journal/       one file per segment, newline-delimited JSON
 ```
+
+The journal is plain text on purpose. When a store misbehaves at three
+in the morning, `tail -f` and `jq` are already installed.
+
+## Durability
+
+A write is acknowledged only after this sequence, in this order:
+
+```
+blob durable  ->  journal durable  ->  index committed  ->  ack
+```
+
+Each step is recoverable from the one before it. A crash after the blob
+lands leaves an unreferenced file, which the collector removes once it
+is older than the grace period. A crash after the journal entry lands
+leaves an index that is behind, which is replayed forward at the next
+start. There is no ordering in which a client is told a write succeeded
+and the bytes are not there.
+
+Blobs are never deleted the moment they become unreferenced. They wait
+out `store.gc.grace`, which is what makes a bulk delete someone regrets
+recoverable. The journal is never pruned while it is the only record of
+which key holds which content.
 
 Observability is reading log files. Rotation is logrotate's job; the
 daemon reopens its streams on SIGHUP.
@@ -105,7 +129,7 @@ daemon reopens its streams on SIGHUP.
 Under construction. Milestones:
 
 - [x] **M0** config, CLI, index, host capability probe
-- [ ] **M1** blob store: content addressing, journal, fsync discipline,
+- [x] **M1** blob store: content addressing, journal, fsync discipline,
       refcounts, GC
 - [ ] **M2** S3 API with sigv4 — the twelve endpoints WordPress needs
 - [ ] **M3** agent writeback queue and S3 client

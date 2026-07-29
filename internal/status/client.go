@@ -84,6 +84,14 @@ func render(i Info, out io.Writer) {
 
 	if s := i.Store; s != nil {
 		fmt.Fprintf(out, "\nstore  listen %s  data %s  replica %s\n", s.Listen, s.Data, s.Replica)
+		lag := ""
+		if s.AppliedSeq < s.JournalSeq {
+			lag = fmt.Sprintf("  (index behind by %d)", s.JournalSeq-s.AppliedSeq)
+		}
+		fmt.Fprintf(out, "  journal seq %d, applied %d%s\n", s.JournalSeq, s.AppliedSeq, lag)
+		if s.JournalNote != "" {
+			fmt.Fprintf(out, "  %s\n", s.JournalNote)
+		}
 		renderNamespaces(out, "bucket", s.Buckets)
 	}
 	if a := i.Agent; a != nil {

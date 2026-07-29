@@ -201,34 +201,7 @@ func (d *DB) Close() error {
 // Put inserts or replaces an entry, keeping the namespace stats in the
 // same transaction so they can never drift from the objects.
 func (d *DB) Put(ns string, e Entry) error {
-	if e.Key == "" {
-		return fmt.Errorf("index: empty key")
-	}
-	if e.ATime.IsZero() {
-		e.ATime = time.Now()
-	}
-	return d.b.Update(func(tx *bolt.Tx) error {
-		ob, err := tx.CreateBucketIfNotExists(objKey(ns))
-		if err != nil {
-			return err
-		}
-		var old *Entry
-		if raw := ob.Get([]byte(e.Key)); raw != nil {
-			var prev Entry
-			if err := json.Unmarshal(raw, &prev); err != nil {
-				return fmt.Errorf("index: corrupt entry %s/%s: %w", ns, e.Key, err)
-			}
-			old = &prev
-		}
-		raw, err := json.Marshal(e)
-		if err != nil {
-			return err
-		}
-		if err := ob.Put([]byte(e.Key), raw); err != nil {
-			return err
-		}
-		return applyStats(tx, ns, old, &e)
-	})
+	return d.Update(func(t *Tx) error { return t.Put(ns, e) })
 }
 
 // Get returns the entry for key, merging any access time still pending
@@ -267,23 +240,9 @@ func (d *DB) Delete(ns, key string) error {
 	delete(d.pending[ns], key)
 	d.mu.Unlock()
 
-	return d.b.Update(func(tx *bolt.Tx) error {
-		ob := tx.Bucket(objKey(ns))
-		if ob == nil {
-			return nil
-		}
-		raw := ob.Get([]byte(key))
-		if raw == nil {
-			return nil
-		}
-		var old Entry
-		if err := json.Unmarshal(raw, &old); err != nil {
-			return fmt.Errorf("index: corrupt entry %s/%s: %w", ns, key, err)
-		}
-		if err := ob.Delete([]byte(key)); err != nil {
-			return err
-		}
-		return applyStats(tx, ns, &old, nil)
+	return d.Update(func(t *Tx) error {
+		_, _, err := t.Delete(ns, key)
+		return err
 	})
 }
 
@@ -291,30 +250,10 @@ func (d *DB) Delete(ns, key string) error {
 // metadata. Returns false when the key is unknown.
 func (d *DB) SetState(ns, key string, s State) (bool, error) {
 	var ok bool
-	err := d.b.Update(func(tx *bolt.Tx) error {
-		ob := tx.Bucket(objKey(ns))
-		if ob == nil {
-			return nil
-		}
-		raw := ob.Get([]byte(key))
-		if raw == nil {
-			return nil
-		}
-		var e Entry
-		if err := json.Unmarshal(raw, &e); err != nil {
-			return fmt.Errorf("index: corrupt entry %s/%s: %w", ns, key, err)
-		}
-		old := e
-		e.State = s
-		next, err := json.Marshal(e)
-		if err != nil {
-			return err
-		}
-		if err := ob.Put([]byte(key), next); err != nil {
-			return err
-		}
-		ok = true
-		return applyStats(tx, ns, &old, &e)
+	err := d.Update(func(t *Tx) error {
+		var err error
+		ok, err = t.SetState(ns, key, s)
+		return err
 	})
 	return ok, err
 }

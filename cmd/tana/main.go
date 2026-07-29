@@ -27,6 +27,7 @@ import (
 	"github.com/ostap-mykhaylyak/tana/internal/paths"
 	"github.com/ostap-mykhaylyak/tana/internal/service"
 	"github.com/ostap-mykhaylyak/tana/internal/status"
+	"github.com/ostap-mykhaylyak/tana/internal/store"
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
@@ -217,12 +218,27 @@ func runDaemon(cfgPath string) (err error) {
 
 	stop := make(chan struct{})
 
-	// Subsystems land in M1-M4. Until then the daemon is a working
-	// skeleton: it validates, indexes, answers --status and shuts down
-	// cleanly, which is what the milestones after this one build on.
+	// The blob store, journal and collector. The S3 API in front of
+	// them lands in M2; until then the store is reachable only through
+	// --status, which is enough to run it and watch it recover.
+	var st *store.Store
 	if cfg.Has(config.RoleStore) {
-		logs.Service.Warn("store role configured but the blob store is not implemented yet (M1)",
-			"data", cfg.Store.Data, "listen", cfg.Store.Listen)
+		st, err = store.New(cfg.Store, idx, logs.Service, logs.Transfer)
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		// Replay before serving anything: an index that is behind the
+		// journal must never answer a question.
+		if _, err := st.Recover(); err != nil {
+			return err
+		}
+		st.StartGC(stop)
+		logs.Service.Info("store open",
+			"data", cfg.Store.Data, "buckets", len(cfg.Store.Buckets),
+			"journal_seq", st.LastSeq(), "gc_interval", cfg.Store.GC.Interval.Std().String())
+		logs.Service.Warn("store role: the S3 API is not implemented yet (M2), the store is not reachable over the network",
+			"listen", cfg.Store.Listen)
 	}
 	if cfg.Has(config.RoleAgent) {
 		logs.Service.Warn("agent role configured but writeback and FUSE are not implemented yet (M3, M4)",
@@ -236,13 +252,18 @@ func runDaemon(cfgPath string) (err error) {
 			for _, w := range cfg.Warnings {
 				logs.Service.Warn("config warning", "warning", w)
 			}
+			// Only the tenant table and the collection schedule are
+			// hot-swappable; the data root is bound at startup.
+			if st != nil {
+				st.Configure(cfg.Store)
+			}
 		}); err != nil {
 		return err
 	}
 
 	// Local control socket: the IPC channel behind --status. If it
 	// fails the daemon still serves; --status will report not running.
-	collect := collector(version, started, mgr, idx, host)
+	collect := collector(version, started, mgr, idx, host, st)
 	statusSrv, err := status.Serve(paths.Socket, collect)
 	if err != nil {
 		logs.Service.Error("control socket unavailable", "error", err)
@@ -271,8 +292,9 @@ func runDaemon(cfgPath string) (err error) {
 	return nil
 }
 
-// collector builds the --status snapshot from live state.
-func collector(version string, started time.Time, mgr *config.Manager, idx *index.DB, host caps.Report) status.Collector {
+// collector builds the --status snapshot from live state. st is nil
+// when this machine does not run the store role.
+func collector(version string, started time.Time, mgr *config.Manager, idx *index.DB, host caps.Report, st *store.Store) status.Collector {
 	return func() status.Info {
 		cfg := mgr.Get()
 		roles := make([]string, 0, len(cfg.Roles))
@@ -296,8 +318,16 @@ func collector(version string, started time.Time, mgr *config.Manager, idx *inde
 				Data:    cfg.Store.Data,
 				Replica: string(cfg.Store.Replica.Mode),
 			}
+			if st != nil {
+				s.JournalSeq = st.LastSeq()
+				if applied, err := st.AppliedSeq(); err == nil {
+					s.AppliedSeq = applied
+				} else {
+					s.JournalNote = "journal position unreadable: " + err.Error()
+				}
+			}
 			for _, b := range cfg.Store.Buckets {
-				s.Buckets = append(s.Buckets, namespace(idx, b.Name, "blob store not implemented yet (M1)"))
+				s.Buckets = append(s.Buckets, namespace(idx, b.Name, "S3 API not implemented yet (M2)"))
 			}
 			info.Store = s
 		}

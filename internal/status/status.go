@@ -38,10 +38,16 @@ type Info struct {
 
 // StoreInfo describes the S3 service side.
 type StoreInfo struct {
-	Listen  string      `json:"listen"`
-	Data    string      `json:"data"`
-	Replica string      `json:"replica"`
-	Buckets []Namespace `json:"buckets"`
+	Listen  string `json:"listen"`
+	Data    string `json:"data"`
+	Replica string `json:"replica"`
+	// JournalSeq is the last mutation written; AppliedSeq is how far
+	// the index has folded them in. They are equal on a healthy store,
+	// and their gap is the first thing to look at after a crash.
+	JournalSeq  uint64      `json:"journal_seq"`
+	AppliedSeq  uint64      `json:"applied_seq"`
+	JournalNote string      `json:"journal_note,omitempty"`
+	Buckets     []Namespace `json:"buckets"`
 }
 
 // AgentInfo describes the WordPress side.
