@@ -36,7 +36,19 @@ use.
 FUSE passthrough over a plain backing directory, keeps a bounded local
 cache, uploads in the background, and recalls evicted objects on read.
 
-A small deployment can declare both.
+A small deployment declares both, and that is where every deployment
+should start: `roles: [store, agent]` on one machine, with the agent
+talking to `127.0.0.1` instead of another host. Nothing else changes.
+
+The two roles then share the machine's index file. Their namespaces are
+scoped by role, so a site may be named after its own bucket without the
+two writing over each other, and `--fsck --rebuild` touches only what
+the store owns.
+
+One thing is worth knowing before you size the disk: on a single
+machine a cached object exists twice — once in the agent's backing
+store, once as a blob. Eviction still halves that, but a cache ceiling
+buys less than it does when the store lives on another host.
 
 ## Requirements
 

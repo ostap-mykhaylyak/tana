@@ -289,3 +289,91 @@ func TestValidBucketName(t *testing.T) {
 		}
 	}
 }
+
+func TestSingleBoxCrossCheck(t *testing.T) {
+	// One machine, both roles: the ordinary way to start.
+	cfg, err := Load(write(t, `
+roles: [store, agent]
+store:
+  listen: 127.0.0.1:9200
+  buckets:
+    - {name: shop-uploads, access_key: AK, secret_key: SK}
+agent:
+  sites:
+    - name: shop.example.com
+      uploads: /var/www/shop/wp-content/uploads
+      backing: /var/lib/tana/shop
+      backend: {endpoint: "http://127.0.0.1:9200", bucket: shop-uploads, access_key: AK, secret_key: SK}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("a correct single-box config produced warnings: %v", cfg.Warnings)
+	}
+
+	// A site aimed at a bucket this machine does not serve: almost
+	// always a typo, and it would otherwise fail at the first upload
+	// rather than at startup.
+	cfg, err = Load(write(t, `
+roles: [store, agent]
+store:
+  buckets:
+    - {name: shop-uploads, access_key: AK, secret_key: SK}
+agent:
+  sites:
+    - name: shop.example.com
+      uploads: /var/www/shop/wp-content/uploads
+      backing: /var/lib/tana/shop
+      backend: {endpoint: "http://127.0.0.1:9200", bucket: shop-upload, access_key: AK, secret_key: SK}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Warnings) != 1 {
+		t.Errorf("warnings = %v, want one about the unknown bucket", cfg.Warnings)
+	}
+
+	// Right bucket, wrong keys: the same class of mistake.
+	cfg, err = Load(write(t, `
+roles: [store, agent]
+store:
+  buckets:
+    - {name: shop-uploads, access_key: AK, secret_key: SK}
+agent:
+  sites:
+    - name: shop.example.com
+      uploads: /var/www/shop/wp-content/uploads
+      backing: /var/lib/tana/shop
+      backend: {endpoint: "http://127.0.0.1:9200", bucket: shop-uploads, access_key: AK, secret_key: WRONG}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Warnings) != 1 {
+		t.Errorf("warnings = %v, want one about the credentials", cfg.Warnings)
+	}
+}
+
+func TestSiteNamedLikeItsBucketIsAllowed(t *testing.T) {
+	// The index is scoped by role, so this is legal rather than a
+	// collision waiting to happen.
+	cfg, err := Load(write(t, `
+roles: [store, agent]
+store:
+  buckets:
+    - {name: shop-uploads, access_key: AK, secret_key: SK}
+agent:
+  sites:
+    - name: shop-uploads
+      uploads: /var/www/shop/wp-content/uploads
+      backing: /var/lib/tana/shop
+      backend: {endpoint: "http://127.0.0.1:9200", bucket: shop-uploads, access_key: AK, secret_key: SK}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("warnings = %v", cfg.Warnings)
+	}
+}

@@ -477,3 +477,31 @@ func (s *Stats) add(e *Entry, sign int64) {
 
 // objKey is the bbolt bucket name holding a namespace's objects.
 func objKey(ns string) []byte { return []byte(objPrefix + ns) }
+
+// Namespace scopes an index namespace by the subsystem that owns it.
+//
+// One machine can run both roles — a single box for a small
+// deployment, or for a first test — and then the store and the agent
+// share one index file. Without a scope they would share more than
+// that: a site named like a bucket would land on the same entries, and
+// the store's rebuild would wipe the agent's namespace on its way
+// past. The scope is what keeps two subsystems in one file from being
+// two subsystems in one namespace.
+func Namespace(scope, name string) string { return scope + ":" + name }
+
+// Scopes. Kept short because they prefix every key in the file.
+const (
+	ScopeStore = "store"
+	ScopeAgent = "agent"
+)
+
+// InScope reports whether a namespace belongs to a scope.
+func InScope(ns, scope string) bool { return strings.HasPrefix(ns, scope+":") }
+
+// NameOf strips the scope from a namespace, for display.
+func NameOf(ns string) string {
+	if _, name, ok := strings.Cut(ns, ":"); ok {
+		return name
+	}
+	return ns
+}

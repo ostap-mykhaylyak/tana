@@ -57,7 +57,7 @@ type recalls struct {
 // connections for the same file, and the thundering herd is worst
 // exactly when the cache is coldest.
 func (a *Agent) Recall(ctx context.Context, key string) error {
-	e, ok, err := a.idx.Get(a.site.Name, key)
+	e, ok, err := a.idx.Get(a.ns(), key)
 	if err != nil {
 		return err
 	}
@@ -143,10 +143,10 @@ func (a *Agent) fetch(ctx context.Context, key string, e index.Entry) error {
 		return err
 	}
 
-	if _, err := a.idx.SetState(a.site.Name, key, index.Synced); err != nil {
+	if _, err := a.idx.SetState(a.ns(), key, index.Synced); err != nil {
 		return err
 	}
-	a.idx.Touch(a.site.Name, key, time.Now())
+	a.idx.Touch(a.ns(), key, time.Now())
 	a.xferLog.Info("recalled", "site", a.site.Name, "key", key,
 		"size", n, "duration_ms", time.Since(start).Milliseconds())
 	return nil
@@ -157,7 +157,7 @@ func (a *Agent) fetch(ctx context.Context, key string, e index.Entry) error {
 // It refuses anything not known to be on the store: evicting a dirty
 // object would be deleting the only copy.
 func (a *Agent) Evict(key string) error {
-	e, ok, err := a.idx.Get(a.site.Name, key)
+	e, ok, err := a.idx.Get(a.ns(), key)
 	if err != nil {
 		return err
 	}
@@ -173,7 +173,7 @@ func (a *Agent) Evict(key string) error {
 	if err := os.Remove(a.pathOf(key)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if _, err := a.idx.SetState(a.site.Name, key, index.Evicted); err != nil {
+	if _, err := a.idx.SetState(a.ns(), key, index.Evicted); err != nil {
 		return err
 	}
 	a.xferLog.Info("evicted", "site", a.site.Name, "key", key, "size", e.Size)
@@ -183,7 +183,7 @@ func (a *Agent) Evict(key string) error {
 // Pin marks an object as never evictable, or releases it.
 func (a *Agent) Pin(key string, pinned bool) error {
 	return a.idx.Update(func(tx *index.Tx) error {
-		e, ok, err := tx.Get(a.site.Name, key)
+		e, ok, err := tx.Get(a.ns(), key)
 		if err != nil || !ok {
 			if err == nil {
 				err = fs.ErrNotExist
@@ -191,7 +191,7 @@ func (a *Agent) Pin(key string, pinned bool) error {
 			return err
 		}
 		e.Pinned = pinned
-		return tx.Put(a.site.Name, e)
+		return tx.Put(a.ns(), e)
 	})
 }
 
@@ -219,7 +219,7 @@ func (a *Agent) EvictToFit(now time.Time) (EvictStats, error) {
 		return st, nil // no ceiling configured: mirror everything
 	}
 
-	stats, err := a.idx.Stats(a.site.Name)
+	stats, err := a.idx.Stats(a.ns())
 	if err != nil {
 		return st, err
 	}
@@ -234,7 +234,7 @@ func (a *Agent) EvictToFit(now time.Time) (EvictStats, error) {
 		atime time.Time
 	}
 	var pool []candidate
-	if err := a.idx.Walk(a.site.Name, func(e index.Entry) error {
+	if err := a.idx.Walk(a.ns(), func(e index.Entry) error {
 		if !e.State.Local() || !e.State.Safe() {
 			return nil // already evicted, or not safe to evict
 		}

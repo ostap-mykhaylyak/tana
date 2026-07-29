@@ -17,7 +17,7 @@ import (
 
 // Entry returns an object's metadata from the index.
 func (a *Agent) Entry(key string) (index.Entry, bool, error) {
-	return a.idx.Get(a.site.Name, key)
+	return a.idx.Get(a.ns(), key)
 }
 
 // Backing returns the directory holding the local bytes.
@@ -34,7 +34,7 @@ func (a *Agent) KeyOf(p string) (string, bool) { return a.keyOf(p) }
 
 // Touch records that an object was read, which is what eviction
 // orders by.
-func (a *Agent) Touch(key string) { a.idx.Touch(a.site.Name, key, time.Now()) }
+func (a *Agent) Touch(key string) { a.idx.Touch(a.ns(), key, time.Now()) }
 
 // EvictedChildren returns the evicted objects directly inside dir,
 // which have no directory entry of their own because their bytes are
@@ -48,7 +48,7 @@ func (a *Agent) EvictedChildren(dir string) (map[string]index.Entry, error) {
 		prefix += "/"
 	}
 	out := map[string]index.Entry{}
-	err := a.idx.WalkPrefix(a.site.Name, prefix, func(e index.Entry) error {
+	err := a.idx.WalkPrefix(a.ns(), prefix, func(e index.Entry) error {
 		if e.State.Local() {
 			return nil // it has a real directory entry already
 		}

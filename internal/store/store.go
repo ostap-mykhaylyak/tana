@@ -135,6 +135,10 @@ func (s *Store) Buckets() []string {
 	return out
 }
 
+// ns scopes a bucket's index namespace to the store role, so a site
+// with the same name on the same machine cannot collide with it.
+func (s *Store) ns(bucket string) string { return index.Namespace(index.ScopeStore, bucket) }
+
 // Blobs exposes the blob store, for the scrub and for --status.
 func (s *Store) Blobs() *blob.Store { return s.blobs }
 
@@ -200,14 +204,14 @@ func (s *Store) apply(tx *index.Tx, r journal.Record) error {
 
 // bind points a key at a hash, moving the reference counts to match.
 func (s *Store) bind(tx *index.Tx, bucket, key, hash, etag string, size int64, mtime, now time.Time) error {
-	old, existed, err := tx.Get(bucket, key)
+	old, existed, err := tx.Get(s.ns(bucket), key)
 	if err != nil {
 		return err
 	}
 	// Rebinding a key to content it already has must not inflate the
 	// reference count, or the blob becomes uncollectable forever.
 	if existed && old.Hash == hash {
-		return tx.Put(bucket, index.Entry{
+		return tx.Put(s.ns(bucket), index.Entry{
 			Key: key, Size: size, ModTime: mtime, Mode: old.Mode,
 			Hash: hash, ETag: etag, State: index.Synced, ATime: now, Pinned: old.Pinned,
 		})
@@ -220,7 +224,7 @@ func (s *Store) bind(tx *index.Tx, bucket, key, hash, etag string, size int64, m
 	if _, err := tx.Ref(hash, +1, now); err != nil {
 		return err
 	}
-	return tx.Put(bucket, index.Entry{
+	return tx.Put(s.ns(bucket), index.Entry{
 		Key: key, Size: size, ModTime: mtime, Mode: 0o644,
 		Hash: hash, ETag: etag, State: index.Synced, ATime: now,
 	})
@@ -228,7 +232,7 @@ func (s *Store) bind(tx *index.Tx, bucket, key, hash, etag string, size int64, m
 
 // unbind removes a key and releases its reference.
 func (s *Store) unbind(tx *index.Tx, bucket, key string, now time.Time) error {
-	old, existed, err := tx.Delete(bucket, key)
+	old, existed, err := tx.Delete(s.ns(bucket), key)
 	if err != nil || !existed {
 		return err
 	}
@@ -335,7 +339,7 @@ func (s *Store) Head(bucket, key string) (index.Entry, error) {
 	if _, ok := s.Bucket(bucket); !ok {
 		return index.Entry{}, ErrNoSuchBucket{Name: bucket}
 	}
-	e, ok, err := s.idx.Get(bucket, key)
+	e, ok, err := s.idx.Get(s.ns(bucket), key)
 	if err != nil {
 		return index.Entry{}, err
 	}
@@ -361,7 +365,7 @@ func (s *Store) Get(bucket, key string) (index.Entry, io.ReadCloser, error) {
 			"bucket", bucket, "key", key, "hash", e.Hash)
 		return index.Entry{}, nil, err
 	}
-	s.idx.Touch(bucket, key, time.Now())
+	s.idx.Touch(s.ns(bucket), key, time.Now())
 	return e, f, nil
 }
 
@@ -371,7 +375,7 @@ func (s *Store) Delete(bucket, key string) error {
 	if _, ok := s.Bucket(bucket); !ok {
 		return ErrNoSuchBucket{Name: bucket}
 	}
-	if _, ok, err := s.idx.Get(bucket, key); err != nil {
+	if _, ok, err := s.idx.Get(s.ns(bucket), key); err != nil {
 		return err
 	} else if !ok {
 		return nil
@@ -401,13 +405,13 @@ func (s *Store) List(bucket, prefix string, fn func(index.Entry) error) error {
 		return ErrNoSuchBucket{Name: bucket}
 	}
 	if prefix == "" {
-		return s.idx.Walk(bucket, fn)
+		return s.idx.Walk(s.ns(bucket), fn)
 	}
-	return s.idx.WalkPrefix(bucket, prefix, fn)
+	return s.idx.WalkPrefix(s.ns(bucket), prefix, fn)
 }
 
 // Stats returns a bucket's index counters.
-func (s *Store) Stats(bucket string) (index.Stats, error) { return s.idx.Stats(bucket) }
+func (s *Store) Stats(bucket string) (index.Stats, error) { return s.idx.Stats(s.ns(bucket)) }
 
 // AppliedSeq reports how far the journal has been folded into the
 // index. Together with the journal's last sequence it answers "is the

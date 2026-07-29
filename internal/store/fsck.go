@@ -68,7 +68,7 @@ func (s *Store) Fsck(rebuild bool) (FsckReport, error) {
 	// Every object must have its blob. Collected here rather than
 	// reported one at a time so the caller sees the shape of the
 	// problem instead of the first instance of it.
-	namespaces, err := s.idx.Namespaces()
+	namespaces, err := s.storeNamespaces()
 	if err != nil {
 		return rep, err
 	}
@@ -83,7 +83,7 @@ func (s *Store) Fsck(rebuild bool) (FsckReport, error) {
 			if _, ok, err := s.blobs.Stat(e.Hash); err != nil {
 				return err
 			} else if !ok {
-				rep.MissingBlobs = append(rep.MissingBlobs, ns+"/"+e.Key)
+				rep.MissingBlobs = append(rep.MissingBlobs, index.NameOf(ns)+"/"+e.Key)
 			}
 			return nil
 		}); err != nil {
@@ -123,9 +123,29 @@ func (s *Store) Fsck(rebuild bool) (FsckReport, error) {
 	return rep, nil
 }
 
+// storeNamespaces lists the index namespaces this store owns.
+//
+// A machine running both roles shares one index file with its agent,
+// and the agent's namespaces are not the store's business — least of
+// all during a rebuild, which would otherwise drop a live site's
+// metadata on its way past.
+func (s *Store) storeNamespaces() ([]string, error) {
+	all, err := s.idx.Namespaces()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, ns := range all {
+		if index.InScope(ns, index.ScopeStore) {
+			out = append(out, ns)
+		}
+	}
+	return out, nil
+}
+
 // rebuildIndex discards the derived index and replays the journal.
 func (s *Store) rebuildIndex() (int, error) {
-	namespaces, err := s.idx.Namespaces()
+	namespaces, err := s.storeNamespaces()
 	if err != nil {
 		return 0, err
 	}

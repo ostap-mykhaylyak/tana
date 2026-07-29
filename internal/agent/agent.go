@@ -87,8 +87,17 @@ func New(site config.Site, idx *index.DB, svcLog, xferLog *slog.Logger) (*Agent,
 	}, nil
 }
 
-// Name returns the site name, which is also its index namespace.
+// Name returns the site name.
 func (a *Agent) Name() string { return a.site.Name }
+
+// ns scopes the site's index namespace to the agent role. A machine
+// running both roles shares one index file, and a bucket named like
+// this site must not land on the same entries.
+func (a *Agent) ns() string { return index.Namespace(index.ScopeAgent, a.site.Name) }
+
+// Namespace returns the site's scoped index namespace, for callers
+// that read the index directly.
+func (a *Agent) Namespace() string { return a.ns() }
 
 // Site returns the configuration this agent was built from.
 func (a *Agent) Site() config.Site { return a.site }
@@ -156,7 +165,7 @@ func (a *Agent) Scan() (ScanStats, error) {
 		st.Files++
 		seen[key] = true
 
-		prev, exists, err := a.idx.Get(a.site.Name, key)
+		prev, exists, err := a.idx.Get(a.ns(), key)
 		if err != nil {
 			return err
 		}
@@ -169,7 +178,7 @@ func (a *Agent) Scan() (ScanStats, error) {
 			return nil // unchanged and already known
 		}
 
-		if err := a.idx.Put(a.site.Name, index.Entry{
+		if err := a.idx.Put(a.ns(), index.Entry{
 			Key:     key,
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
@@ -189,7 +198,7 @@ func (a *Agent) Scan() (ScanStats, error) {
 	// Entries whose file is gone. An evicted object has no local file
 	// by design, so it is not a deletion and must be left alone.
 	var gone []index.Entry
-	if err := a.idx.Walk(a.site.Name, func(e index.Entry) error {
+	if err := a.idx.Walk(a.ns(), func(e index.Entry) error {
 		if !seen[e.Key] && e.State.Local() {
 			gone = append(gone, e)
 		}
@@ -245,7 +254,7 @@ func (a *Agent) worker(stop <-chan struct{}) {
 
 // upload sends one object, retrying transient failures.
 func (a *Agent) upload(stop <-chan struct{}, key string) {
-	e, ok, err := a.idx.Get(a.site.Name, key)
+	e, ok, err := a.idx.Get(a.ns(), key)
 	if err != nil || !ok || e.State.Safe() {
 		return // already uploaded, or gone
 	}
@@ -265,7 +274,7 @@ func (a *Agent) upload(stop <-chan struct{}, key string) {
 		cancel()
 
 		if err == nil {
-			if _, err := a.idx.SetState(a.site.Name, key, index.Synced); err != nil {
+			if _, err := a.idx.SetState(a.ns(), key, index.Synced); err != nil {
 				a.svcLog.Error("upload succeeded but the index did not record it",
 					"site", a.site.Name, "key", key, "error", err)
 				return
@@ -306,7 +315,7 @@ func (a *Agent) remove(key string) error {
 	if err := a.cli.Delete(ctx, key); err != nil {
 		return err
 	}
-	if err := a.idx.Delete(a.site.Name, key); err != nil {
+	if err := a.idx.Delete(a.ns(), key); err != nil {
 		return err
 	}
 	a.xferLog.Info("deleted", "site", a.site.Name, "key", key)
@@ -328,7 +337,7 @@ func (a *Agent) sweep(stop <-chan struct{}) {
 			return
 		case <-t.C:
 			var dirty []string
-			if err := a.idx.Walk(a.site.Name, func(e index.Entry) error {
+			if err := a.idx.Walk(a.ns(), func(e index.Entry) error {
 				if !e.State.Safe() {
 					dirty = append(dirty, e.Key)
 				}
@@ -421,7 +430,7 @@ func (a *Agent) handleEvent(w *fsnotify.Watcher, ev fsnotify.Event) {
 	if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Chmod) == 0 {
 		return
 	}
-	if err := a.idx.Put(a.site.Name, index.Entry{
+	if err := a.idx.Put(a.ns(), index.Entry{
 		Key:     key,
 		Size:    fi.Size(),
 		ModTime: fi.ModTime(),
@@ -451,7 +460,7 @@ func (a *Agent) pathOf(key string) string {
 }
 
 // Stats returns the site's index counters.
-func (a *Agent) Stats() (index.Stats, error) { return a.idx.Stats(a.site.Name) }
+func (a *Agent) Stats() (index.Stats, error) { return a.idx.Stats(a.ns()) }
 
 // Drain blocks until the queue is empty and no upload is in flight, or
 // the deadline passes. It exists for tests and for --sync; the running

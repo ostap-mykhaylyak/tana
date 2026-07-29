@@ -130,7 +130,7 @@ func (h *harness) remote(key string) (string, bool) {
 // state returns an object's state in the agent's index.
 func (h *harness) state(key string) (index.State, bool) {
 	h.t.Helper()
-	e, ok, err := h.idx.Get(h.Name(), key)
+	e, ok, err := h.idx.Get(h.Namespace(), key)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestEvictedEntriesAreNotTreatedAsDeletions(t *testing.T) {
 	// Eviction removes the local file on purpose (M5). A scan must not
 	// read that as "WordPress deleted it" and wipe the object from the
 	// store — which would turn a cache eviction into data loss.
-	if _, err := h.idx.SetState(h.Name(), "cold.jpg", index.Evicted); err != nil {
+	if _, err := h.idx.SetState(h.Namespace(), "cold.jpg", index.Evicted); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(h.backing, "cold.jpg")); err != nil {

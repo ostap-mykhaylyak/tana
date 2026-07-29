@@ -441,7 +441,7 @@ func collector(version string, started time.Time, mgr *config.Manager, idx *inde
 				}
 			}
 			for _, b := range cfg.Store.Buckets {
-				s.Buckets = append(s.Buckets, namespace(idx, b.Name, "S3 API not implemented yet (M2)"))
+				s.Buckets = append(s.Buckets, namespace(idx, index.Namespace(index.ScopeStore, b.Name), b.Name, ""))
 			}
 			info.Store = s
 		}
@@ -452,7 +452,7 @@ func collector(version string, started time.Time, mgr *config.Manager, idx *inde
 				if _, running := agents[site.Name]; !running {
 					note = "not running"
 				}
-				a.Sites = append(a.Sites, namespace(idx, site.Name, note))
+				a.Sites = append(a.Sites, namespace(idx, index.Namespace(index.ScopeAgent, site.Name), site.Name, note))
 			}
 			info.Agent = a
 		}
@@ -461,10 +461,12 @@ func collector(version string, started time.Time, mgr *config.Manager, idx *inde
 }
 
 // namespace reads one namespace's counters, degrading to the note
-// rather than failing the whole status call.
-func namespace(idx *index.DB, name, note string) status.Namespace {
-	ns := status.Namespace{Name: name, Note: note}
-	if st, err := idx.Stats(name); err == nil {
+// rather than failing the whole status call. The scoped namespace and
+// the display name differ: one machine can run both roles, so the
+// index is scoped by role while --status shows the plain name.
+func namespace(idx *index.DB, scoped, display, note string) status.Namespace {
+	ns := status.Namespace{Name: display, Note: note}
+	if st, err := idx.Stats(scoped); err == nil {
 		ns.Stats = st
 	} else {
 		ns.Note = "index unreadable: " + err.Error()

@@ -11,6 +11,12 @@
 #   [store]         a storage box: owns the blobs, speaks S3
 #   [agent]         a web server: FUSE mount, cache, writeback
 #   [store, agent]  a single box doing both
+#
+# Both roles on one machine is the ordinary way to start: everything
+# works, the agent simply talks to 127.0.0.1 instead of another host.
+# The store and the agent share this machine's index file, and their
+# namespaces are kept apart by role — a site may safely be named after
+# its own bucket. See the single-server example at the bottom.
 roles: []
 
 
@@ -136,3 +142,46 @@ agent:
   #       #         with the upload still queued. Faster, and a lie if
   #       #         the machine dies before the queue drains.
   #       ack: remote
+
+
+# ------------------------------------------------------- single server
+#
+# Everything on one machine, which is where most deployments start and
+# where all of them should be tested first. Copy this over the sections
+# above, fill in the keys from `tana --keygen`, and adjust the paths.
+#
+# roles: [store, agent]
+#
+# store:
+#   data: /srv/tana
+#   listen: 127.0.0.1:9200
+#   buckets:
+#     - name: shop-uploads
+#       access_key: "TANA..."
+#       secret_key: "..."
+#       public_read: true
+#       protected:
+#         - "woocommerce_uploads/**"
+#
+# agent:
+#   sites:
+#     - name: shop.example.com
+#       uploads: /home/user/public_html/wp-content/uploads
+#       backing: /var/lib/tana/shop
+#       cache:
+#         # On one machine the bytes exist twice while an object is
+#         # cached: once in the backing store, once as a blob. Eviction
+#         # still halves that, but a ceiling here buys less than it does
+#         # when the store is on another host. Leave it out at first.
+#         max_size: 20GB
+#       mount:
+#         allow_other: true
+#         populate_user: "www-data"
+#       backend:
+#         # The store is right here. Loopback, not the LAN address:
+#         # nothing else needs to reach it.
+#         endpoint: http://127.0.0.1:9200
+#         bucket: shop-uploads
+#         access_key: "TANA..."   # the same pair as above
+#         secret_key: "..."
+#         ack: remote

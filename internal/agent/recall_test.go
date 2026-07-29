@@ -29,7 +29,7 @@ func TestEvictThenRecall(t *testing.T) {
 	}
 	h.settle()
 
-	before, _, err := h.idx.Get(h.Name(), "2026/07/foto.jpg")
+	before, _, err := h.idx.Get(h.Namespace(), "2026/07/foto.jpg")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestEvictThenRecall(t *testing.T) {
 
 	// The whole point: the metadata is still local and still true, so
 	// every stat WordPress makes is answered without a network call.
-	after, ok, err := h.idx.Get(h.Name(), "2026/07/foto.jpg")
+	after, ok, err := h.idx.Get(h.Namespace(), "2026/07/foto.jpg")
 	if err != nil || !ok {
 		t.Fatal(err)
 	}
@@ -277,8 +277,8 @@ func TestEvictToFitTakesTheColdestFirst(t *testing.T) {
 	h.settle()
 
 	// warm.jpg was read recently; cold.jpg last year.
-	h.idx.Touch(h.Name(), "cold.jpg", time.Now().Add(-365*24*time.Hour))
-	h.idx.Touch(h.Name(), "warm.jpg", time.Now())
+	h.idx.Touch(h.Namespace(), "cold.jpg", time.Now().Add(-365*24*time.Hour))
+	h.idx.Touch(h.Namespace(), "warm.jpg", time.Now())
 
 	if _, err := h.EvictToFit(time.Now()); err != nil {
 		t.Fatal(err)

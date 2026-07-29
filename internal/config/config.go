@@ -447,7 +447,39 @@ func (c *Config) validate() error {
 			return err
 		}
 	}
+	if c.Has(RoleStore) && c.Has(RoleAgent) {
+		c.crossCheck()
+	}
 	return nil
+}
+
+// crossCheck looks for mistakes that are only possible when one
+// machine runs both roles — a small deployment, or a first test.
+//
+// Nothing here is fatal: an agent is allowed to point at a store on
+// another host even while this one also serves. But a site aimed at a
+// bucket this machine does not have is almost always a typo, and it
+// fails at the first upload rather than at startup, which is a much
+// worse place to find out.
+func (c *Config) crossCheck() {
+	local := make(map[string]Bucket, len(c.Store.Buckets))
+	for _, b := range c.Store.Buckets {
+		local[b.Name] = b
+	}
+	for _, s := range c.Agent.Sites {
+		b, ok := local[s.Backend.Bucket]
+		if !ok {
+			c.warnf("site %q points at bucket %q, which this machine's store does not serve; "+
+				"that is fine if the endpoint is another host, and a typo otherwise",
+				s.Name, s.Backend.Bucket)
+			continue
+		}
+		if b.AccessKey != s.Backend.AccessKey || b.SecretKey != s.Backend.SecretKey {
+			c.warnf("site %q uses credentials that do not match bucket %q on this machine; "+
+				"that is fine if the endpoint is another host, and a typo otherwise",
+				s.Name, s.Backend.Bucket)
+		}
+	}
 }
 
 func (c *Config) validateStore() error {
