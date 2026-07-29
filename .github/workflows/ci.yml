@@ -14,7 +14,13 @@ jobs:
         with:
           go-version: "1.25"
           cache: false
+      # Tidied as Linux sees it, which is the only platform tana is
+      # deployed on. internal/mount is build-tagged linux, so a tidy run
+      # from a Windows workstation demotes go-fuse to an indirect
+      # dependency and the two disagree forever.
       - name: go mod tidy
+        env:
+          GOOS: linux
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
