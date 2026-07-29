@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ostap-mykhaylyak/tana/internal/agent"
 	"github.com/ostap-mykhaylyak/tana/internal/bootstrap"
 	"github.com/ostap-mykhaylyak/tana/internal/caps"
 	"github.com/ostap-mykhaylyak/tana/internal/config"
@@ -265,8 +266,24 @@ func runDaemon(cfgPath string) (err error) {
 		}()
 		logs.Service.Info("s3 api listening", "addr", cfg.Store.Listen, "region", cfg.Store.Region)
 	}
+	// One agent per site: index namespace, writeback queue and watcher.
+	agents := map[string]*agent.Agent{}
 	if cfg.Has(config.RoleAgent) {
-		logs.Service.Warn("agent role configured but writeback and FUSE are not implemented yet (M3, M4)",
+		for _, site := range cfg.Agent.Sites {
+			ag, err := agent.New(site, idx, logs.Service, logs.Transfer)
+			if err != nil {
+				return err
+			}
+			if err := ag.Start(stop); err != nil {
+				return fmt.Errorf("site %s: %w", site.Name, err)
+			}
+			agents[site.Name] = ag
+			logs.Service.Info("site started",
+				"site", site.Name, "backing", site.Backing,
+				"endpoint", site.Backend.Endpoint, "bucket", site.Backend.Bucket)
+		}
+		logs.Service.Warn("agent role: the FUSE mount is not implemented yet (M4); "+
+			"uploads is not yet backed by tana, only the backing directory is mirrored",
 			"sites", len(cfg.Agent.Sites))
 	}
 
@@ -288,7 +305,7 @@ func runDaemon(cfgPath string) (err error) {
 
 	// Local control socket: the IPC channel behind --status. If it
 	// fails the daemon still serves; --status will report not running.
-	collect := collector(version, started, mgr, idx, host, st)
+	collect := collector(version, started, mgr, idx, host, st, agents)
 	statusSrv, err := status.Serve(paths.Socket, collect)
 	if err != nil {
 		logs.Service.Error("control socket unavailable", "error", err)
@@ -327,7 +344,7 @@ func runDaemon(cfgPath string) (err error) {
 
 // collector builds the --status snapshot from live state. st is nil
 // when this machine does not run the store role.
-func collector(version string, started time.Time, mgr *config.Manager, idx *index.DB, host caps.Report, st *store.Store) status.Collector {
+func collector(version string, started time.Time, mgr *config.Manager, idx *index.DB, host caps.Report, st *store.Store, agents map[string]*agent.Agent) status.Collector {
 	return func() status.Info {
 		cfg := mgr.Get()
 		roles := make([]string, 0, len(cfg.Roles))
@@ -367,7 +384,11 @@ func collector(version string, started time.Time, mgr *config.Manager, idx *inde
 		if cfg.Has(config.RoleAgent) {
 			a := &status.AgentInfo{}
 			for _, site := range cfg.Agent.Sites {
-				a.Sites = append(a.Sites, namespace(idx, site.Name, "not mounted yet (M4)"))
+				note := "not mounted yet (M4): mirroring the backing directory"
+				if _, running := agents[site.Name]; !running {
+					note = "not running"
+				}
+				a.Sites = append(a.Sites, namespace(idx, site.Name, note))
 			}
 			info.Agent = a
 		}
