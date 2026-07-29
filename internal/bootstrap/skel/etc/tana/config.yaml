@@ -83,9 +83,25 @@ agent:
   #       # plugins stat and read constantly and they cost nothing to
   #       # keep; evicting them buys no space and hurts every request.
   #       keep_below: 64KB
-  #       # Glob patterns, relative to uploads, pinned by policy.
+  #       # Glob patterns, relative to uploads, pinned by policy. A
+  #       # trailing /** covers a directory and everything under it.
   #       never_evict:
   #         - "woocommerce_uploads/**"
+  #       # How often an eviction pass runs.
+  #       interval: 1m
+  #
+  #     mount:
+  #       # Let php-fpm and the web server reach the mount. Needed
+  #       # whenever tana does not run as them, which is almost always.
+  #       allow_other: true
+  #       # Reads by THIS user pull an evicted object back onto local
+  #       # disk. Reads by anyone else — public traffic arriving through
+  #       # the web server — are streamed from the store instead.
+  #       # Without it, a crawler walking the 2019 archive refills the
+  #       # cache with exactly the objects that were evicted for being
+  #       # cold. Accepts a name or a numeric uid; empty means every
+  #       # read populates.
+  #       populate_user: "www-data"
   #
   #     backend:
   #       endpoint: http://store01.lan:9200

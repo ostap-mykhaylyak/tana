@@ -257,6 +257,24 @@ type Site struct {
 
 	Cache   Cache   `yaml:"cache"`
 	Backend Backend `yaml:"backend"`
+	Mount   Mount   `yaml:"mount"`
+}
+
+// Mount tunes the FUSE filesystem for one site.
+type Mount struct {
+	// AllowOther lets users other than the daemon's own reach the
+	// mount. php-fpm and the web server need it whenever tana does not
+	// run as them, which is almost always.
+	AllowOther bool `yaml:"allow_other"`
+	// PopulateUser names the account whose reads pull an evicted object
+	// back onto local disk — normally the PHP-FPM pool user. Reads by
+	// anyone else, meaning public traffic through the web server, are
+	// streamed from the store instead. Without this a crawler walking
+	// an old archive refills the cache with exactly the objects that
+	// were evicted for being cold. Empty means every read populates.
+	PopulateUser string `yaml:"populate_user"`
+	// Debug turns on FUSE protocol tracing. Very loud.
+	Debug bool `yaml:"debug"`
 }
 
 // Cache bounds how much of the site stays on local disk.
@@ -271,8 +289,12 @@ type Cache struct {
 	// nothing to keep.
 	KeepBelow Size `yaml:"keep_below"`
 	// NeverEvict are glob patterns, relative to Uploads, that are
-	// pinned by policy.
+	// pinned by policy. A trailing /** covers a directory and
+	// everything beneath it, at any depth.
 	NeverEvict []string `yaml:"never_evict"`
+	// Interval is how often an eviction pass runs. Passes are cheap
+	// when there is nothing to do — they read counters, not the disk.
+	Interval Duration `yaml:"interval"`
 }
 
 // Backend is the store this site writes to.
@@ -362,6 +384,9 @@ func (c *Config) applyDefaults() {
 		}
 		if s.Cache.KeepBelow == 0 {
 			s.Cache.KeepBelow = 64 << 10
+		}
+		if s.Cache.Interval == 0 {
+			s.Cache.Interval = Duration(time.Minute)
 		}
 	}
 }

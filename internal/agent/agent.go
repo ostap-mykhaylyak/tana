@@ -62,6 +62,9 @@ type Agent struct {
 
 	mu      sync.Mutex
 	pending map[string]bool // keys already queued, to avoid duplicates
+
+	// recalling collapses concurrent recalls of the same key.
+	recalling recalls
 }
 
 // New builds an agent for one site.

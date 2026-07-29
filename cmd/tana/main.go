@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"os/user"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	"github.com/ostap-mykhaylyak/tana/internal/config"
 	"github.com/ostap-mykhaylyak/tana/internal/index"
 	"github.com/ostap-mykhaylyak/tana/internal/logging"
+	"github.com/ostap-mykhaylyak/tana/internal/mount"
 	"github.com/ostap-mykhaylyak/tana/internal/paths"
 	"github.com/ostap-mykhaylyak/tana/internal/s3"
 	"github.com/ostap-mykhaylyak/tana/internal/service"
@@ -266,8 +269,10 @@ func runDaemon(cfgPath string) (err error) {
 		}()
 		logs.Service.Info("s3 api listening", "addr", cfg.Store.Listen, "region", cfg.Store.Region)
 	}
-	// One agent per site: index namespace, writeback queue and watcher.
+	// One agent per site: index namespace, writeback queue, watcher,
+	// eviction pass and FUSE mount.
 	agents := map[string]*agent.Agent{}
+	var mounts []*mount.Mount
 	if cfg.Has(config.RoleAgent) {
 		for _, site := range cfg.Agent.Sites {
 			ag, err := agent.New(site, idx, logs.Service, logs.Transfer)
@@ -277,14 +282,28 @@ func runDaemon(cfgPath string) (err error) {
 			if err := ag.Start(stop); err != nil {
 				return fmt.Errorf("site %s: %w", site.Name, err)
 			}
+			ag.StartEviction(stop, site.Cache.Interval.Std())
 			agents[site.Name] = ag
+
+			uid, err := resolveUID(site.Mount.PopulateUser)
+			if err != nil {
+				return fmt.Errorf("site %s: %w", site.Name, err)
+			}
+			mnt, err := mount.New(ag, mount.Options{
+				PopulateUID: uid,
+				AllowOther:  site.Mount.AllowOther,
+				Debug:       site.Mount.Debug,
+			}, logs.Service)
+			if err != nil {
+				return fmt.Errorf("site %s: %w", site.Name, err)
+			}
+			mounts = append(mounts, mnt)
+
 			logs.Service.Info("site started",
-				"site", site.Name, "backing", site.Backing,
-				"endpoint", site.Backend.Endpoint, "bucket", site.Backend.Bucket)
+				"site", site.Name, "uploads", site.Uploads, "backing", site.Backing,
+				"endpoint", site.Backend.Endpoint, "bucket", site.Backend.Bucket,
+				"populate_uid", uid)
 		}
-		logs.Service.Warn("agent role: the FUSE mount is not implemented yet (M4); "+
-			"uploads is not yet backed by tana, only the backing directory is mirrored",
-			"sites", len(cfg.Agent.Sites))
 	}
 
 	if err := mgr.Watch(stop,
@@ -325,6 +344,14 @@ func runDaemon(cfgPath string) (err error) {
 		}
 		logs.Service.Info("shutting down", "signal", s.String())
 		close(stop)
+		// Unmount before anything else: a mount left behind after the
+		// daemon exits makes the uploads directory unreadable, which is
+		// a worse failure than the one being shut down for.
+		for _, m := range mounts {
+			if err := m.Unmount(); err != nil {
+				logs.Service.Error("unmount failed", "error", err)
+			}
+		}
 		if api != nil {
 			// Let in-flight uploads finish: cutting one off mid-body
 			// leaves an orphan blob for the collector and an error the
@@ -384,7 +411,7 @@ func collector(version string, started time.Time, mgr *config.Manager, idx *inde
 		if cfg.Has(config.RoleAgent) {
 			a := &status.AgentInfo{}
 			for _, site := range cfg.Agent.Sites {
-				note := "not mounted yet (M4): mirroring the backing directory"
+				note := ""
 				if _, running := agents[site.Name]; !running {
 					note = "not running"
 				}
@@ -406,6 +433,27 @@ func namespace(idx *index.DB, name, note string) status.Namespace {
 		ns.Note = "index unreadable: " + err.Error()
 	}
 	return ns
+}
+
+// resolveUID turns a configured account name into a numeric uid. A
+// numeric value is accepted as-is, so a deployment without the account
+// in its passwd database can still name it.
+func resolveUID(name string) (uint32, error) {
+	if name == "" {
+		return 0, nil
+	}
+	if n, err := strconv.ParseUint(name, 10, 32); err == nil {
+		return uint32(n), nil
+	}
+	u, err := user.Lookup(name)
+	if err != nil {
+		return 0, fmt.Errorf("mount.populate_user %q: %w", name, err)
+	}
+	n, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("mount.populate_user %q: unreadable uid %q", name, u.Uid)
+	}
+	return uint32(n), nil
 }
 
 func fatalIf(err error) {

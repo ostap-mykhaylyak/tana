@@ -133,8 +133,8 @@ Under construction. Milestones:
       refcounts, GC
 - [x] **M2** S3 API with sigv4 — the twelve endpoints WordPress needs
 - [x] **M3** agent writeback queue and S3 client
-- [ ] **M4** FUSE passthrough mount and recall
-- [ ] **M5** eviction, pinning, caller-aware recall
+- [x] **M4** FUSE passthrough mount and recall
+- [x] **M5** eviction, pinning, caller-aware recall
 - [ ] **M6** journal shipping to a secondary store
 - [ ] **M7** WooCommerce download policy, URL rewriting
 - [ ] **M8** `--fsck`, scrub, index rebuild
