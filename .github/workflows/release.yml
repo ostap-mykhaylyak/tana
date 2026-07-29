@@ -53,6 +53,14 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth 0 so the annotated tag object is present: its
+      # message is the release notes, written once when the tag is
+      # created instead of twice in two places that drift apart.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: release notes from the tag annotation
+        run: git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > NOTES.md
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -60,6 +68,7 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
+          body_path: NOTES.md
           files: |
             dist/tana-*.tar.gz
             dist/tana-*.tar.gz.sha256
