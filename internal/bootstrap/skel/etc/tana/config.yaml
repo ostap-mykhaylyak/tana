@@ -1,0 +1,100 @@
+# tana - private S3 object store and WordPress uploads agent.
+#
+# Read at startup and hot-reloaded on change; never rewritten by the
+# daemon. Most fields have a production default, but tana cannot
+# invent credentials for you: roles is empty below, and the daemon
+# will refuse to start until you fill in the section you need.
+#
+# Generate a key pair with:  tana --keygen
+
+# What this machine runs.
+#   [store]         a storage box: owns the blobs, speaks S3
+#   [agent]         a web server: FUSE mount, cache, writeback
+#   [store, agent]  a single box doing both
+roles: []
+
+
+# ---------------------------------------------------------------- store
+store:
+  # Root of the blob store. Blobs live under data/blobs/ab/cd/<sha256>,
+  # the journal under data/journal. Put it on the volume with the
+  # space; tana does no RAID and no erasure coding of its own, so the
+  # redundancy below this path is ZFS's or mdraid's job.
+  data: /srv/tana
+
+  # S3 API address. Bind it to the private interface: nothing in tana's
+  # threat model expects the raw store to face the internet.
+  listen: 127.0.0.1:9200
+
+  # Region name returned by the API and expected in the sigv4
+  # credential scope. Arbitrary, but agents must use the same value.
+  region: tana
+
+  # One bucket per site, each with its own credentials. An agent can
+  # only touch the bucket whose keys it holds.
+  buckets: []
+  # buckets:
+  #   - name: shop-uploads
+  #     access_key: "..."
+  #     secret_key: "..."
+
+  gc:
+    # How often to sweep blobs that lost their last reference.
+    interval: 6h
+    # How long such a blob is kept anyway. This grace period is what
+    # makes an accidental mass delete recoverable, so do not set it to
+    # zero because the disk looks full.
+    grace: 72h
+
+  replica:
+    # off | primary | secondary. Replication ships the journal that is
+    # already written for crash recovery, rather than adding a second
+    # mechanism to get wrong. Quoted because bare off is a YAML boolean.
+    mode: "off"
+    # Secondaries a primary ships to.
+    peers: []
+    # Primary a secondary pulls from.
+    from: ""
+
+
+# ---------------------------------------------------------------- agent
+agent:
+  sites: []
+  # sites:
+  #   - name: shop.example.com
+  #
+  #     # The path WordPress knows: this becomes the FUSE mountpoint.
+  #     uploads: /home/user/public_html/wp-content/uploads
+  #
+  #     # Where the real files live. Keep it a plain directory on the
+  #     # same filesystem you would have used anyway: if tana ever dies,
+  #     # `mount --bind` this over uploads and the site is back, minus
+  #     # whatever had been evicted.
+  #     backing: /var/lib/tana/shop
+  #
+  #     cache:
+  #       # Ceiling for the backing store. Omit for no limit (mirror
+  #       # everything, evict nothing).
+  #       max_size: 20GB
+  #       # Keep evicting while the filesystem has less than this free,
+  #       # whatever max_size says.
+  #       min_free: 5GB
+  #       # Never evict objects smaller than this. Thumbnails are what
+  #       # plugins stat and read constantly and they cost nothing to
+  #       # keep; evicting them buys no space and hurts every request.
+  #       keep_below: 64KB
+  #       # Glob patterns, relative to uploads, pinned by policy.
+  #       never_evict:
+  #         - "woocommerce_uploads/**"
+  #
+  #     backend:
+  #       endpoint: http://store01.lan:9200
+  #       bucket: shop-uploads
+  #       access_key: "..."
+  #       secret_key: "..."
+  #       # remote: acknowledge a write only once the store has it on
+  #       #         disk. Slower and true.
+  #       # local:  acknowledge as soon as it is in the backing store,
+  #       #         with the upload still queued. Faster, and a lie if
+  #       #         the machine dies before the queue drains.
+  #       ack: remote

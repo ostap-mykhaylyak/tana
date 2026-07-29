@@ -1,0 +1,46 @@
+[Unit]
+Description=tana - private S3 object store and WordPress uploads agent
+Documentation=https://github.com/ostap-mykhaylyak/tana
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/sbin/tana
+# SIGHUP reopens the log files; the config is hot-reloaded on its own
+# when the file changes, so a reload never has to restart the daemon.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=30s
+
+# /run/tana (control socket), /var/lib/tana (index), /var/log/tana.
+RuntimeDirectory=tana
+RuntimeDirectoryMode=0750
+StateDirectory=tana
+StateDirectoryMode=0750
+LogsDirectory=tana
+LogsDirectoryMode=0750
+
+# The agent role mounts FUSE filesystems that php-fpm and nginx must
+# see. Without shared propagation the mount stays inside the service's
+# namespace and the web server keeps reading the empty mountpoint.
+MountFlags=shared
+
+# Sandboxing is kept deliberately light: the agent mounts filesystems
+# at operator-chosen paths and the store writes to an operator-chosen
+# volume, so the usual ProtectSystem/ReadWritePaths lockdown would
+# have to be reopened for exactly the paths that matter.
+NoNewPrivileges=false
+ProtectHome=false
+PrivateTmp=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+# The index and the blob store are the whole point; give the process
+# room for file descriptors on a busy store.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

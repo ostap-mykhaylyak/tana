@@ -1,0 +1,6 @@
+/tana
+/tana.exe
+/bin/
+/dist/
+*.tar.gz
+*.sha256

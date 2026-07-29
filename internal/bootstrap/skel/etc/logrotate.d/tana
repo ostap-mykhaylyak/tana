@@ -1,0 +1,15 @@
+/var/log/tana/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 root adm
+    sharedscripts
+    postrotate
+        # tana reopens every stream on SIGHUP; copytruncate would race
+        # the buffered access log and lose lines.
+        systemctl kill -s HUP tana.service 2>/dev/null || true
+    endscript
+}

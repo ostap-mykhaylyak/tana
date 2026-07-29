@@ -1,0 +1,7 @@
+# tana is deployed only on Linux, and internal/bootstrap embeds the
+# systemd unit, the logrotate policy and the default config straight
+# from the working tree. A CRLF checkout on a Windows workstation would
+# bake CRLF into those embedded files, so the whole tree stays LF.
+* text=auto eol=lf
+*.png binary
+*.gz binary
