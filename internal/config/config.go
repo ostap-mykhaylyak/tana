@@ -214,7 +214,25 @@ type Bucket struct {
 	Name      string `yaml:"name"`
 	AccessKey string `yaml:"access_key"`
 	SecretKey string `yaml:"secret_key"`
+
+	// PublicRead allows unauthenticated GET and HEAD. A WordPress media
+	// library is public by definition — the same files a browser would
+	// have fetched from wp-content/uploads — so serving them without
+	// credentials is what lets a CDN or a reverse proxy sit in front of
+	// the store at all. Writes always require a signature.
+	PublicRead bool `yaml:"public_read"`
+
+	// Protected are key patterns excluded from PublicRead however it is
+	// set. This is where woocommerce_uploads belongs: those files are
+	// paid downloads, they live in the same bucket as the media, and
+	// the rule that keeps them private has to be on the server. A rule
+	// that lives in a plugin is a rule someone can switch off from
+	// wp-admin without knowing what it did.
+	Protected []string `yaml:"protected"`
 }
+
+// IsProtected reports whether a key is excluded from public reads.
+func (b Bucket) IsProtected(key string) bool { return MatchAny(b.Protected, key) }
 
 // GC configures the sweep that reclaims blobs nobody references any
 // more. Deletion is never immediate: a blob that just lost its last
@@ -230,10 +248,19 @@ type GC struct {
 // than introducing a second mechanism.
 type Replica struct {
 	Mode ReplicaMode `yaml:"mode"`
-	// Peers are the secondaries a primary ships to.
+	// Secret is the shared key between primary and secondaries. It is
+	// not sigv4: replication is not a tenant operation, it exposes
+	// every bucket, and the peer holding the key is the operator's own
+	// second machine. Put it on a private network.
+	Secret string `yaml:"secret"`
+	// Peers are the secondaries expected to pull. Informational: the
+	// primary keeps no per-peer state, so it cannot drift from what a
+	// peer actually holds.
 	Peers []string `yaml:"peers"`
 	// From is the primary a secondary pulls from.
 	From string `yaml:"from"`
+	// Interval is how often a secondary pulls.
+	Interval Duration `yaml:"interval"`
 }
 
 // Agent configures the WordPress-side agent: one entry per site.
@@ -372,6 +399,9 @@ func (c *Config) applyDefaults() {
 	if c.Store.Replica.Mode == "" {
 		c.Store.Replica.Mode = ReplicaOff
 	}
+	if c.Store.Replica.Interval == 0 {
+		c.Store.Replica.Interval = Duration(10 * time.Second)
+	}
 	for i := range c.Agent.Sites {
 		s := &c.Agent.Sites[i]
 		if s.Backend.Region == "" {
@@ -455,12 +485,19 @@ func (c *Config) validateStore() error {
 	switch s.Replica.Mode {
 	case ReplicaOff:
 	case ReplicaPrimary:
+		if s.Replica.Secret == "" {
+			return fmt.Errorf("store.replica.mode is primary but replica.secret is empty: " +
+				"an unauthenticated replication endpoint would expose every bucket")
+		}
 		if len(s.Replica.Peers) == 0 {
-			c.warnf("store: replica.mode is primary but no peers listed, nothing will be shipped")
+			c.warnf("store: replica.mode is primary but no peers listed; the endpoint is open to anyone holding the secret")
 		}
 	case ReplicaSecondary:
 		if s.Replica.From == "" {
 			return fmt.Errorf("store.replica.mode is secondary but replica.from is empty")
+		}
+		if s.Replica.Secret == "" {
+			return fmt.Errorf("store.replica.mode is secondary but replica.secret is empty")
 		}
 	default:
 		return fmt.Errorf("unknown store.replica.mode %q (want off, primary or secondary)", s.Replica.Mode)

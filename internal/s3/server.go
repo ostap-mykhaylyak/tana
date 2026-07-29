@@ -98,6 +98,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // route dispatches an authenticated request.
 func (s *Server) route(w http.ResponseWriter, r *http.Request, bucket, key string) *APIError {
+	if s.publicRead(r, bucket, key) {
+		return s.getObject(w, r, bucket, key, r.Method == http.MethodGet)
+	}
 	sig, apiErr := s.verify.verify(r)
 	if apiErr != nil {
 		return apiErr
@@ -205,6 +208,43 @@ func (s *Server) objectOp(w http.ResponseWriter, r *http.Request, bucket, key st
 		return s.deleteObject(w, bucket, key)
 	}
 	return errNotImplemented("this method")
+}
+
+// publicRead reports whether this request may be served without any
+// credentials at all.
+//
+// A WordPress media library is public by definition: the same files a
+// browser would have fetched straight out of wp-content/uploads. Being
+// able to serve them unauthenticated is what lets a CDN or a reverse
+// proxy sit in front of the store. What must never leak through here
+// is anything under a protected pattern — woocommerce_uploads holds
+// paid downloads, in the same bucket, and the rule keeping them
+// private belongs on the server rather than in a plugin somebody can
+// switch off from wp-admin.
+//
+// Reads only. A write is never anonymous, whatever the bucket says.
+func (s *Server) publicRead(r *http.Request, bucket, key string) bool {
+	if bucket == "" || key == "" {
+		return false // never enumerate a bucket anonymously
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	// A request that brought credentials is verified as usual: falling
+	// back to anonymous access would turn a bad signature into a
+	// success, which is the opposite of what a signature is for.
+	if r.Header.Get("Authorization") != "" || r.URL.Query().Get("X-Amz-Signature") != "" {
+		return false
+	}
+	// Sub-resources (?uploadId, ?acl, …) are not object reads.
+	if len(r.URL.RawQuery) > 0 {
+		return false
+	}
+	b, ok := s.store.Bucket(bucket)
+	if !ok || !b.PublicRead {
+		return false
+	}
+	return !b.IsProtected(key)
 }
 
 // listBuckets answers GET /. A caller sees only its own bucket:

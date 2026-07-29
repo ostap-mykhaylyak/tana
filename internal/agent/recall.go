@@ -7,13 +7,12 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/ostap-mykhaylyak/tana/internal/config"
 	"github.com/ostap-mykhaylyak/tana/internal/index"
 )
 
@@ -301,33 +300,7 @@ func (a *Agent) overBy(localBytes int64) int64 {
 
 // protected reports whether a key matches a never_evict pattern.
 func (a *Agent) protected(key string) bool {
-	for _, pattern := range a.site.Cache.NeverEvict {
-		if matchGlob(pattern, key) {
-			return true
-		}
-	}
-	return false
-}
-
-// matchGlob matches a key against a pattern, where ** crosses path
-// separators and * does not.
-//
-// path.Match alone is not enough: "woocommerce_uploads/**" has to
-// match a key nested any number of directories deep, and that is the
-// pattern every deployment will actually write.
-func matchGlob(pattern, key string) bool {
-	if pattern == "**" {
-		return true
-	}
-	// "dir/**" covers the directory itself and everything under it, at
-	// any depth. Matching only the children would leave the directory
-	// entry itself unprotected, which is a surprising thing for a
-	// never_evict rule to do.
-	if prefix, ok := strings.CutSuffix(pattern, "/**"); ok {
-		return key == prefix || strings.HasPrefix(key, prefix+"/")
-	}
-	ok, err := path.Match(pattern, key)
-	return err == nil && ok
+	return config.MatchAny(a.site.Cache.NeverEvict, key)
 }
 
 // StartEviction runs an eviction pass on an interval until stop.

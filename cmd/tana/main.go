@@ -16,9 +16,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"os/user"
 	"strconv"
@@ -65,6 +67,11 @@ func main() {
 	showCaps := flag.Bool("caps", false, "report what this host can do, and exit")
 	keygen := flag.Bool("keygen", false, "print a fresh access key / secret key pair, and exit")
 
+	// --- offline maintenance: the service must be stopped ---
+	fsck := flag.Bool("fsck", false, "check the index against the journal and the blobs, then exit")
+	rebuild := flag.Bool("rebuild", false, "with --fsck, discard the index and replay the journal")
+	scrub := flag.Bool("scrub", false, "verify every blob against its content hash, then exit")
+
 	showVersion := flag.Bool("version", false, "print version and exit")
 	cfgPath := flag.String("config", paths.ConfigFile, "config file")
 	flag.Usage = usage
@@ -90,6 +97,10 @@ func main() {
 		return
 	case *statusFlag || *statusJSON || *watch > 0:
 		os.Exit(status.Run(version, paths.Socket, *cfgPath, *statusJSON, *watch))
+	case *fsck:
+		os.Exit(runFsck(*cfgPath, *rebuild))
+	case *scrub:
+		os.Exit(runScrub(*cfgPath))
 	}
 
 	if args := flag.Args(); len(args) > 0 {
@@ -232,6 +243,7 @@ func runDaemon(cfgPath string) (err error) {
 	// --status, which is enough to run it and watch it recover.
 	var st *store.Store
 	var api *http.Server
+	var secondary *store.Secondary
 	if cfg.Has(config.RoleStore) {
 		st, err = store.New(cfg.Store, idx, logs.Service, logs.Transfer)
 		if err != nil {
@@ -248,9 +260,19 @@ func runDaemon(cfgPath string) (err error) {
 			"data", cfg.Store.Data, "buckets", len(cfg.Store.Buckets),
 			"journal_seq", st.LastSeq(), "gc_interval", cfg.Store.GC.Interval.Std().String())
 
+		// The S3 API, plus the replication endpoint on a path S3 keys
+		// cannot produce.
+		handler := http.NewServeMux()
+		handler.Handle("/", s3.New(st, cfg.Store.Region, logs.Access, logs.Service))
+		if cfg.Store.Replica.Mode == config.ReplicaPrimary {
+			handler.Handle("/-/replica/", st.ReplicaHandler(cfg.Store.Replica.Secret))
+			logs.Service.Info("replication endpoint enabled",
+				"peers", cfg.Store.Replica.Peers)
+		}
+
 		api = &http.Server{
 			Addr:    cfg.Store.Listen,
-			Handler: s3.New(st, cfg.Store.Region, logs.Access, logs.Service),
+			Handler: handler,
 			// Media uploads can be slow on a bad link; the read timeout
 			// has to allow a whole object, so only the header is bounded
 			// tightly. Idle connections are cheap and CDN origins reuse
@@ -268,6 +290,14 @@ func runDaemon(cfgPath string) (err error) {
 			}
 		}()
 		logs.Service.Info("s3 api listening", "addr", cfg.Store.Listen, "region", cfg.Store.Region)
+
+		if cfg.Store.Replica.Mode == config.ReplicaSecondary {
+			secondary = store.NewSecondary(st, cfg.Store.Replica)
+			secondary.Start(stop, cfg.Store.Replica.Interval.Std())
+			logs.Service.Info("replicating from primary",
+				"from", cfg.Store.Replica.From,
+				"interval", cfg.Store.Replica.Interval.Std().String())
+		}
 	}
 	// One agent per site: index namespace, writeback queue, watcher,
 	// eviction pass and FUSE mount.
@@ -324,7 +354,7 @@ func runDaemon(cfgPath string) (err error) {
 
 	// Local control socket: the IPC channel behind --status. If it
 	// fails the daemon still serves; --status will report not running.
-	collect := collector(version, started, mgr, idx, host, st, agents)
+	collect := collector(version, started, mgr, idx, host, st, agents, secondary)
 	statusSrv, err := status.Serve(paths.Socket, collect)
 	if err != nil {
 		logs.Service.Error("control socket unavailable", "error", err)
@@ -371,7 +401,7 @@ func runDaemon(cfgPath string) (err error) {
 
 // collector builds the --status snapshot from live state. st is nil
 // when this machine does not run the store role.
-func collector(version string, started time.Time, mgr *config.Manager, idx *index.DB, host caps.Report, st *store.Store, agents map[string]*agent.Agent) status.Collector {
+func collector(version string, started time.Time, mgr *config.Manager, idx *index.DB, host caps.Report, st *store.Store, agents map[string]*agent.Agent, secondary *store.Secondary) status.Collector {
 	return func() status.Info {
 		cfg := mgr.Get()
 		roles := make([]string, 0, len(cfg.Roles))
@@ -394,6 +424,13 @@ func collector(version string, started time.Time, mgr *config.Manager, idx *inde
 				Listen:  cfg.Store.Listen,
 				Data:    cfg.Store.Data,
 				Replica: string(cfg.Store.Replica.Mode),
+			}
+			if secondary != nil {
+				rep := secondary.Status()
+				s.Replica = fmt.Sprintf("secondary of %s, lag %d", rep.From, rep.Lag)
+				if rep.Error != "" {
+					s.JournalNote = "replication: " + rep.Error
+				}
 			}
 			if st != nil {
 				s.JournalSeq = st.LastSeq()
@@ -433,6 +470,117 @@ func namespace(idx *index.DB, name, note string) status.Namespace {
 		ns.Note = "index unreadable: " + err.Error()
 	}
 	return ns
+}
+
+// offlineStore opens the store outside the daemon, for maintenance.
+//
+// It refuses to run against a live service. Both checks walk the same
+// files the daemon has open, and a rebuild rewrites the index the
+// daemon is serving from; doing that underneath a running process is
+// how a repair tool becomes the outage.
+func offlineStore(cfgPath string) (*store.Store, *index.DB, error) {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !cfg.Has(config.RoleStore) {
+		return nil, nil, fmt.Errorf("this machine does not run the store role")
+	}
+	if err := exec.Command("systemctl", "is-active", "--quiet", paths.ServiceName).Run(); err == nil {
+		return nil, nil, fmt.Errorf("tana is running: stop it first (tana stop)")
+	}
+
+	idx, err := index.Open(paths.IndexFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	st, err := store.New(cfg.Store, idx, logger, logger)
+	if err != nil {
+		idx.Close()
+		return nil, nil, err
+	}
+	return st, idx, nil
+}
+
+// runFsck implements --fsck.
+func runFsck(cfgPath string, rebuild bool) int {
+	st, idx, err := offlineStore(cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tana:", err)
+		return 1
+	}
+	defer func() { st.Close(); idx.Close() }()
+
+	rep, err := st.Fsck(rebuild)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tana:", err)
+		return 1
+	}
+	if rep.Rebuilt {
+		fmt.Printf("rebuilt the index from %d journal record(s)\n", rep.JournalRecords)
+	}
+	fmt.Printf("objects:            %d\n", rep.Objects)
+	fmt.Printf("references:         %d\n", rep.References)
+	fmt.Printf("unreferenced blobs: %d (the collector removes these)\n", rep.UnreferencedBlobs)
+	fmt.Printf("stale references:   %d\n", rep.StaleRefs)
+	fmt.Printf("checked in %s\n", rep.Duration.Truncate(time.Millisecond))
+
+	if len(rep.MissingBlobs) > 0 {
+		fmt.Printf("\n%d object(s) reference content that is not on disk:\n", len(rep.MissingBlobs))
+		for i, k := range rep.MissingBlobs {
+			if i == 20 {
+				fmt.Printf("  ... and %d more\n", len(rep.MissingBlobs)-20)
+				break
+			}
+			fmt.Println("  ", k)
+		}
+		// Say plainly which findings are bookkeeping and which are not.
+		// An operator reading a repair tool's output at three in the
+		// morning should not have to work out which line is the bad one.
+		fmt.Println("\nThis is data loss, not bookkeeping: restore those objects from a")
+		fmt.Println("secondary or a backup. Rebuilding the index will not bring them back.")
+	}
+	if rep.Healthy() {
+		fmt.Println("\nno problems found")
+		return 0
+	}
+	return 1
+}
+
+// runScrub implements --scrub.
+func runScrub(cfgPath string) int {
+	st, idx, err := offlineStore(cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tana:", err)
+		return 1
+	}
+	defer func() { st.Close(); idx.Close() }()
+
+	fmt.Println("verifying every blob against its content hash; this reads the whole store")
+	rep, err := st.Scrub(func(blobs, bytes int64) {
+		fmt.Printf("  %d blobs, %d bytes so far\n", blobs, bytes)
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tana:", err)
+		return 1
+	}
+	fmt.Printf("blobs:   %d\n", rep.Blobs)
+	fmt.Printf("bytes:   %d\n", rep.Bytes)
+	fmt.Printf("foreign: %d (files tana did not write, left alone)\n", rep.Foreign)
+	fmt.Printf("read in %s\n", rep.Duration.Truncate(time.Millisecond))
+
+	if len(rep.Corrupt) > 0 {
+		fmt.Printf("\n%d blob(s) no longer match their hash:\n", len(rep.Corrupt))
+		for _, h := range rep.Corrupt {
+			fmt.Println("  ", h)
+		}
+		fmt.Println("\nThe content rotted underneath tana. Whatever redundancy sits below")
+		fmt.Println("the blob store did not do its job; check the array before restoring.")
+		return 1
+	}
+	fmt.Println("\nevery blob matches its hash")
+	return 0
 }
 
 // resolveUID turns a configured account name into a numeric uid. A

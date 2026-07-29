@@ -342,3 +342,16 @@ func hashOf(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
+
+// storeConfigWith rebuilds the test store configuration around one
+// modified bucket, for policy tests.
+func storeConfigWith(b config.Bucket) config.Store {
+	return config.Store{
+		Region: testRegion,
+		Buckets: []config.Bucket{
+			b,
+			{Name: "other-site", AccessKey: "OTHERKEY000000000000", SecretKey: "othersecret"},
+		},
+		GC: config.GC{Interval: config.Duration(time.Hour), Grace: config.Duration(72 * time.Hour)},
+	}
+}

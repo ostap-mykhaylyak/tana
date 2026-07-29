@@ -37,6 +37,20 @@ store:
   #   - name: shop-uploads
   #     access_key: "..."
   #     secret_key: "..."
+  #     # Allow unauthenticated GET and HEAD. A WordPress media library
+  #     # is public by definition — the same files a browser would have
+  #     # fetched from wp-content/uploads — and this is what lets a CDN
+  #     # or a reverse proxy sit in front of the store. Writes always
+  #     # need a signature; listing is never anonymous.
+  #     public_read: true
+  #     # Keys excluded from public_read however it is set. This is
+  #     # where woocommerce_uploads belongs: those are paid downloads,
+  #     # they live in the same bucket as the media, and the rule that
+  #     # keeps them private has to be here rather than in a plugin
+  #     # somebody can switch off from wp-admin. They stay reachable
+  #     # through presigned links.
+  #     protected:
+  #       - "woocommerce_uploads/**"
 
   gc:
     # How often to sweep blobs that lost their last reference.
@@ -51,10 +65,18 @@ store:
     # already written for crash recovery, rather than adding a second
     # mechanism to get wrong. Quoted because bare off is a YAML boolean.
     mode: "off"
-    # Secondaries a primary ships to.
+    # Shared key between primary and secondaries. Not sigv4:
+    # replication is not a tenant operation, it exposes every bucket,
+    # and the peer holding the key is your own second machine. Put it
+    # on a private network. Generate one with: tana --keygen
+    secret: ""
+    # Secondaries expected to pull. Informational: the primary keeps
+    # no per-peer state, so it cannot drift from what a peer holds.
     peers: []
     # Primary a secondary pulls from.
     from: ""
+    # How often a secondary pulls.
+    interval: 10s
 
 
 # ---------------------------------------------------------------- agent

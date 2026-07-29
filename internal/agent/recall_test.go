@@ -308,24 +308,3 @@ func TestEvictToFitDoesNothingWithoutACeiling(t *testing.T) {
 		t.Errorf("evicted %d with no ceiling configured", st.Evicted)
 	}
 }
-
-func TestMatchGlob(t *testing.T) {
-	cases := []struct {
-		pattern, key string
-		want         bool
-	}{
-		{"woocommerce_uploads/**", "woocommerce_uploads/2026/07/a.pdf", true},
-		{"woocommerce_uploads/**", "woocommerce_uploads", true},
-		{"woocommerce_uploads/**", "other/2026/a.jpg", false},
-		{"**", "anything/at/all", true},
-		{"*.pdf", "manual.pdf", true},
-		{"*.pdf", "2026/manual.pdf", false}, // a single star does not cross separators
-		{"2026/*/a.jpg", "2026/07/a.jpg", true},
-		{"2026/*/a.jpg", "2026/07/08/a.jpg", false},
-	}
-	for _, c := range cases {
-		if got := matchGlob(c.pattern, c.key); got != c.want {
-			t.Errorf("matchGlob(%q, %q) = %v, want %v", c.pattern, c.key, got, c.want)
-		}
-	}
-}

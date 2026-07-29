@@ -388,3 +388,40 @@ func (j *Journal) repairTail(seg segment) (uint64, error) {
 func segmentName(base uint64) string {
 	return fmt.Sprintf("%0*d%s", segmentDigits, base, segmentSuffix)
 }
+
+// AppendAt writes a record that already carries its sequence number,
+// which is what a secondary does with what it pulls from its primary.
+//
+// The sequence must be exactly the next one. Replication that could
+// skip a record would be replication that silently diverges, and a
+// gap is far easier to refuse than to detect later.
+func (j *Journal) AppendAt(r Record) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if r.Seq != j.last+1 {
+		return fmt.Errorf("journal: out of order record: got seq %d, expected %d", r.Seq, j.last+1)
+	}
+	if r.Time.IsZero() {
+		r.Time = time.Now().UTC()
+	}
+	line, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("journal: encode: %w", err)
+	}
+	line = append(line, '\n')
+
+	if err := j.ensureSegment(r.Seq, int64(len(line))); err != nil {
+		return err
+	}
+	n, err := j.cur.Write(line)
+	if err != nil {
+		return fmt.Errorf("journal: write: %w", err)
+	}
+	j.curSize += int64(n)
+	if err := j.cur.Sync(); err != nil {
+		return fmt.Errorf("journal: sync: %w", err)
+	}
+	j.last = r.Seq
+	return nil
+}
