@@ -12,8 +12,12 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,6 +29,7 @@ import (
 	"github.com/ostap-mykhaylyak/tana/internal/index"
 	"github.com/ostap-mykhaylyak/tana/internal/logging"
 	"github.com/ostap-mykhaylyak/tana/internal/paths"
+	"github.com/ostap-mykhaylyak/tana/internal/s3"
 	"github.com/ostap-mykhaylyak/tana/internal/service"
 	"github.com/ostap-mykhaylyak/tana/internal/status"
 	"github.com/ostap-mykhaylyak/tana/internal/store"
@@ -222,6 +227,7 @@ func runDaemon(cfgPath string) (err error) {
 	// them lands in M2; until then the store is reachable only through
 	// --status, which is enough to run it and watch it recover.
 	var st *store.Store
+	var api *http.Server
 	if cfg.Has(config.RoleStore) {
 		st, err = store.New(cfg.Store, idx, logs.Service, logs.Transfer)
 		if err != nil {
@@ -237,8 +243,27 @@ func runDaemon(cfgPath string) (err error) {
 		logs.Service.Info("store open",
 			"data", cfg.Store.Data, "buckets", len(cfg.Store.Buckets),
 			"journal_seq", st.LastSeq(), "gc_interval", cfg.Store.GC.Interval.Std().String())
-		logs.Service.Warn("store role: the S3 API is not implemented yet (M2), the store is not reachable over the network",
-			"listen", cfg.Store.Listen)
+
+		api = &http.Server{
+			Addr:    cfg.Store.Listen,
+			Handler: s3.New(st, cfg.Store.Region, logs.Access, logs.Service),
+			// Media uploads can be slow on a bad link; the read timeout
+			// has to allow a whole object, so only the header is bounded
+			// tightly. Idle connections are cheap and CDN origins reuse
+			// them heavily.
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+		ln, err := net.Listen("tcp", cfg.Store.Listen)
+		if err != nil {
+			return fmt.Errorf("s3 listener: %w", err)
+		}
+		go func() {
+			if err := api.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logs.Service.Error("s3 api stopped", "error", err)
+			}
+		}()
+		logs.Service.Info("s3 api listening", "addr", cfg.Store.Listen, "region", cfg.Store.Region)
 	}
 	if cfg.Has(config.RoleAgent) {
 		logs.Service.Warn("agent role configured but writeback and FUSE are not implemented yet (M3, M4)",
@@ -283,6 +308,14 @@ func runDaemon(cfgPath string) (err error) {
 		}
 		logs.Service.Info("shutting down", "signal", s.String())
 		close(stop)
+		if api != nil {
+			// Let in-flight uploads finish: cutting one off mid-body
+			// leaves an orphan blob for the collector and an error the
+			// client did not deserve.
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			api.Shutdown(ctx)
+			cancel()
+		}
 		if statusSrv != nil {
 			statusSrv.Close()
 		}

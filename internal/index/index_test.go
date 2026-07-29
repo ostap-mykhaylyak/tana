@@ -17,7 +17,7 @@ func open(t *testing.T) *DB {
 }
 
 func entry(key string, size int64, s State) Entry {
-	return Entry{Key: key, Size: size, ModTime: time.Now(), Mode: 0o644, ETag: "deadbeef", State: s}
+	return Entry{Key: key, Size: size, ModTime: time.Now(), Mode: 0o644, Hash: "deadbeef", State: s}
 }
 
 func TestPutGetDelete(t *testing.T) {
@@ -31,7 +31,7 @@ func TestPutGetDelete(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Get: ok=%v err=%v", ok, err)
 	}
-	if got.Size != 1024 || got.State != Synced || got.ETag != "deadbeef" {
+	if got.Size != 1024 || got.State != Synced || got.Hash != "deadbeef" {
 		t.Errorf("round trip lost data: %+v", got)
 	}
 

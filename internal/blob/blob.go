@@ -16,6 +16,7 @@
 package blob
 
 import (
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -50,7 +51,14 @@ var ErrNotFound = errors.New("blob not found")
 
 // Info describes a stored blob.
 type Info struct {
+	// Hash is the hex sha256: the blob's address and its checksum.
 	Hash string
+	// MD5 is the hex md5 of the same content. tana has no use for it —
+	// sha256 already addresses and verifies the blob — but S3 defines
+	// an object's ETag as its md5, and clients compare it against what
+	// they uploaded. Computing it in the same pass costs one more hash
+	// over bytes already in cache.
+	MD5  string
 	Size int64
 	// Deduped reports that the content was already present, so the
 	// upload cost a hash and nothing else.
@@ -124,7 +132,8 @@ func (s *Store) Put(r io.Reader) (Info, error) {
 	}()
 
 	h := sha256.New()
-	size, err := io.Copy(io.MultiWriter(tmp, h), r)
+	m := md5.New()
+	size, err := io.Copy(io.MultiWriter(tmp, h, m), r)
 	if err != nil {
 		return Info{}, fmt.Errorf("blob store: write: %w", err)
 	}
@@ -136,6 +145,7 @@ func (s *Store) Put(r io.Reader) (Info, error) {
 	}
 
 	hash := hex.EncodeToString(h.Sum(nil))
+	sum := hex.EncodeToString(m.Sum(nil))
 	dst := s.Path(hash)
 
 	// Dedup: identical content is already durable under this exact
@@ -143,7 +153,7 @@ func (s *Store) Put(r io.Reader) (Info, error) {
 	// wrote. Not overwriting also means a concurrent reader of the
 	// existing blob is never disturbed.
 	if _, err := os.Stat(dst); err == nil {
-		return Info{Hash: hash, Size: size, Deduped: true}, nil
+		return Info{Hash: hash, MD5: sum, Size: size, Deduped: true}, nil
 	}
 
 	dir := filepath.Dir(dst)
@@ -154,14 +164,14 @@ func (s *Store) Put(r io.Reader) (Info, error) {
 		// Losing the race against a concurrent Put of the same content
 		// is a success: the blob is there, and it is byte-identical.
 		if _, statErr := os.Stat(dst); statErr == nil {
-			return Info{Hash: hash, Size: size, Deduped: true}, nil
+			return Info{Hash: hash, MD5: sum, Size: size, Deduped: true}, nil
 		}
 		return Info{}, fmt.Errorf("blob store: rename: %w", err)
 	}
 	if err := syncDir(dir); err != nil {
 		return Info{}, fmt.Errorf("blob store: sync dir: %w", err)
 	}
-	return Info{Hash: hash, Size: size}, nil
+	return Info{Hash: hash, MD5: sum, Size: size}, nil
 }
 
 // Open returns a reader for a blob.

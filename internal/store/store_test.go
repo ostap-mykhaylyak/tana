@@ -118,7 +118,7 @@ func TestPutHeadGet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if head.ETag != e.ETag || head.Size != e.Size {
+	if head.Hash != e.Hash || head.Size != e.Size {
 		t.Errorf("Head disagrees with Put: %+v vs %+v", head, e)
 	}
 
@@ -162,10 +162,10 @@ func TestDedupSharesOneBlob(t *testing.T) {
 	a := h.put("2026/07/a.jpg", "identical bytes")
 	b := h.put("2026/07/b.jpg", "identical bytes")
 
-	if a.ETag != b.ETag {
+	if a.Hash != b.Hash {
 		t.Fatal("identical content produced different hashes")
 	}
-	if got := h.refCount(a.ETag); got != 2 {
+	if got := h.refCount(a.Hash); got != 2 {
 		t.Fatalf("ref count = %d, want 2", got)
 	}
 	count, _, err := h.Blobs().Usage()
@@ -185,12 +185,12 @@ func TestDeleteReleasesOneReference(t *testing.T) {
 	if err := h.Delete(testBucket, "a.jpg"); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.refCount(a.ETag); got != 1 {
+	if got := h.refCount(a.Hash); got != 1 {
 		t.Fatalf("ref count = %d, want 1", got)
 	}
 	// The surviving key must still read: this is the failure mode
 	// refcounting exists to prevent.
-	if !h.blobExists(a.ETag) {
+	if !h.blobExists(a.Hash) {
 		t.Fatal("the blob was removed while another key still points at it")
 	}
 	if _, err := h.Head(testBucket, "b.jpg"); err != nil {
@@ -206,7 +206,7 @@ func TestRewritingAKeyWithSameContentDoesNotInflateRefs(t *testing.T) {
 
 	// If each rewrite incremented the count, the blob would become
 	// permanently uncollectable.
-	if got := h.refCount(e.ETag); got != 1 {
+	if got := h.refCount(e.Hash); got != 1 {
 		t.Fatalf("ref count = %d, want 1", got)
 	}
 }
@@ -216,17 +216,17 @@ func TestOverwritingAKeyMovesTheReference(t *testing.T) {
 	oldE := h.put("a.jpg", "version one")
 	newE := h.put("a.jpg", "version two")
 
-	if oldE.ETag == newE.ETag {
+	if oldE.Hash == newE.Hash {
 		t.Fatal("different content produced the same hash")
 	}
-	if got := h.refCount(oldE.ETag); got != 0 {
+	if got := h.refCount(oldE.Hash); got != 0 {
 		t.Errorf("old blob ref count = %d, want 0", got)
 	}
-	if got := h.refCount(newE.ETag); got != 1 {
+	if got := h.refCount(newE.Hash); got != 1 {
 		t.Errorf("new blob ref count = %d, want 1", got)
 	}
 	// Unreferenced is not deleted: the grace period has not run.
-	if !h.blobExists(oldE.ETag) {
+	if !h.blobExists(oldE.Hash) {
 		t.Error("the old blob was removed before its grace period elapsed")
 	}
 }
@@ -244,7 +244,7 @@ func TestGCRespectsGracePeriod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Collected != 0 || !h.blobExists(e.ETag) {
+	if st.Collected != 0 || !h.blobExists(e.Hash) {
 		t.Fatalf("collected %d blob(s) inside the grace period", st.Collected)
 	}
 
@@ -256,7 +256,7 @@ func TestGCRespectsGracePeriod(t *testing.T) {
 	if st.Collected != 1 {
 		t.Fatalf("collected %d, want 1", st.Collected)
 	}
-	if h.blobExists(e.ETag) {
+	if h.blobExists(e.Hash) {
 		t.Error("the blob survived collection")
 	}
 	if st.BytesReclaimed != int64(len("doomed")) {
@@ -280,7 +280,7 @@ func TestGCSparesBlobsReferencedAgain(t *testing.T) {
 	if st.Collected != 0 {
 		t.Errorf("collected %d blob(s) that had been referenced again", st.Collected)
 	}
-	if !h.blobExists(e.ETag) {
+	if !h.blobExists(e.Hash) {
 		t.Fatal("a live blob was collected")
 	}
 }
@@ -440,7 +440,7 @@ func TestRecoverReplaysAnIndexLeftBehind(t *testing.T) {
 	}
 	// And the reference counts must be right, or the collector will
 	// either leak or delete something live.
-	if got := h2.refCount(e.ETag); got != 1 {
+	if got := h2.refCount(e.Hash); got != 1 {
 		t.Errorf("ref count after recovery = %d, want 1", got)
 	}
 }
@@ -457,7 +457,7 @@ func TestRecoverIsIdempotent(t *testing.T) {
 	if _, err := h.Recover(); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.refCount(e.ETag); got != 1 {
+	if got := h.refCount(e.Hash); got != 1 {
 		t.Errorf("ref count after replaying an applied record = %d, want 1", got)
 	}
 	if _, err := h.Head(testBucket, "a.jpg"); err != nil {

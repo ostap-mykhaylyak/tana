@@ -107,6 +107,23 @@ func (s *Store) Bucket(name string) (config.Bucket, bool) {
 	return b, ok
 }
 
+// BucketByAccessKey resolves credentials to the single bucket they may
+// touch.
+//
+// One key pair per bucket is the whole authorization model, and it is
+// enough: a site's agent has no business reading another site's media,
+// and a model with exactly one rule is a model nobody misconfigures.
+func (s *Store) BucketByAccessKey(accessKey string) (config.Bucket, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, b := range s.buckets {
+		if b.AccessKey == accessKey {
+			return b, true
+		}
+	}
+	return config.Bucket{}, false
+}
+
 // Buckets lists the configured bucket names.
 func (s *Store) Buckets() []string {
 	s.mu.RLock()
@@ -164,7 +181,7 @@ func (s *Store) Recover() (int, error) {
 func (s *Store) apply(tx *index.Tx, r journal.Record) error {
 	switch r.Op {
 	case journal.OpPut:
-		if err := s.bind(tx, r.Bucket, r.Key, r.Hash, r.Size, r.MTime, r.Time); err != nil {
+		if err := s.bind(tx, r.Bucket, r.Key, r.Hash, r.ETag, r.Size, r.MTime, r.Time); err != nil {
 			return err
 		}
 	case journal.OpDelete:
@@ -182,21 +199,21 @@ func (s *Store) apply(tx *index.Tx, r journal.Record) error {
 }
 
 // bind points a key at a hash, moving the reference counts to match.
-func (s *Store) bind(tx *index.Tx, bucket, key, hash string, size int64, mtime, now time.Time) error {
+func (s *Store) bind(tx *index.Tx, bucket, key, hash, etag string, size int64, mtime, now time.Time) error {
 	old, existed, err := tx.Get(bucket, key)
 	if err != nil {
 		return err
 	}
 	// Rebinding a key to content it already has must not inflate the
 	// reference count, or the blob becomes uncollectable forever.
-	if existed && old.ETag == hash {
+	if existed && old.Hash == hash {
 		return tx.Put(bucket, index.Entry{
 			Key: key, Size: size, ModTime: mtime, Mode: old.Mode,
-			ETag: hash, State: index.Synced, ATime: now, Pinned: old.Pinned,
+			Hash: hash, ETag: etag, State: index.Synced, ATime: now, Pinned: old.Pinned,
 		})
 	}
-	if existed && old.ETag != "" {
-		if _, err := tx.Ref(old.ETag, -1, now); err != nil {
+	if existed && old.Hash != "" {
+		if _, err := tx.Ref(old.Hash, -1, now); err != nil {
 			return err
 		}
 	}
@@ -205,7 +222,7 @@ func (s *Store) bind(tx *index.Tx, bucket, key, hash string, size int64, mtime, 
 	}
 	return tx.Put(bucket, index.Entry{
 		Key: key, Size: size, ModTime: mtime, Mode: 0o644,
-		ETag: hash, State: index.Synced, ATime: now,
+		Hash: hash, ETag: etag, State: index.Synced, ATime: now,
 	})
 }
 
@@ -215,21 +232,53 @@ func (s *Store) unbind(tx *index.Tx, bucket, key string, now time.Time) error {
 	if err != nil || !existed {
 		return err
 	}
-	if old.ETag == "" {
+	if old.Hash == "" {
 		return nil
 	}
-	_, err = tx.Ref(old.ETag, -1, now)
+	_, err = tx.Ref(old.Hash, -1, now)
 	return err
+}
+
+// PutOptions tunes a write.
+type PutOptions struct {
+	// MTime is the object's modification time. Zero means now.
+	MTime time.Time
+	// ETag overrides the entity tag handed back to the client. Empty
+	// means the content's md5, which is what S3 returns for a
+	// whole-object upload. A multipart completion sets it, because its
+	// tag depends on how the upload was split and cannot be recomputed
+	// from the assembled bytes.
+	ETag string
+	// ExpectHash, when set, is compared against the content's sha256
+	// after the blob lands. It is how a client's declared
+	// x-amz-content-sha256 is enforced without buffering the body:
+	// there is no cheaper check, because the store hashed the content
+	// on the way in anyway.
+	ExpectHash string
 }
 
 // Put stores an object and returns its index entry.
 func (s *Store) Put(bucket, key string, r io.Reader, mtime time.Time) (index.Entry, error) {
+	return s.PutWith(bucket, key, r, PutOptions{MTime: mtime})
+}
+
+// ErrDigestMismatch reports that stored content did not match what the
+// client said it was sending.
+type ErrDigestMismatch struct{ Want, Got string }
+
+func (e ErrDigestMismatch) Error() string {
+	return "content hash mismatch: client declared " + e.Want + ", stored " + e.Got
+}
+
+// PutWith stores an object with options.
+func (s *Store) PutWith(bucket, key string, r io.Reader, opt PutOptions) (index.Entry, error) {
 	if _, ok := s.Bucket(bucket); !ok {
 		return index.Entry{}, ErrNoSuchBucket{Name: bucket}
 	}
 	if key == "" {
 		return index.Entry{}, fmt.Errorf("store: empty key")
 	}
+	mtime := opt.MTime
 	if mtime.IsZero() {
 		mtime = time.Now().UTC()
 	}
@@ -238,10 +287,21 @@ func (s *Store) Put(bucket, key string, r io.Reader, mtime time.Time) (index.Ent
 	if err != nil {
 		return index.Entry{}, err
 	}
+	if opt.ExpectHash != "" && opt.ExpectHash != info.Hash {
+		// The blob stays: it is unreferenced, so the collector takes it
+		// after the grace period, and removing it here could delete
+		// content a concurrent, honest Put just stored.
+		return index.Entry{}, ErrDigestMismatch{Want: opt.ExpectHash, Got: info.Hash}
+	}
+
+	etag := opt.ETag
+	if etag == "" {
+		etag = info.MD5
+	}
 
 	seq, err := s.jrnl.Append(journal.Record{
 		Op: journal.OpPut, Bucket: bucket, Key: key,
-		Hash: info.Hash, Size: info.Size, MTime: mtime,
+		Hash: info.Hash, ETag: etag, Size: info.Size, MTime: mtime,
 	})
 	if err != nil {
 		// The blob is durable but unreferenced. Leaving it is correct:
@@ -253,7 +313,7 @@ func (s *Store) Put(bucket, key string, r io.Reader, mtime time.Time) (index.Ent
 
 	now := time.Now().UTC()
 	if err := s.idx.Update(func(tx *index.Tx) error {
-		if err := s.bind(tx, bucket, key, info.Hash, info.Size, mtime, now); err != nil {
+		if err := s.bind(tx, bucket, key, info.Hash, etag, info.Size, mtime, now); err != nil {
 			return err
 		}
 		return tx.SetMeta(appliedSeqKey, []byte(strconv.FormatUint(seq, 10)))
@@ -265,7 +325,7 @@ func (s *Store) Put(bucket, key string, r io.Reader, mtime time.Time) (index.Ent
 		"size", info.Size, "hash", info.Hash, "deduped", info.Deduped, "seq", seq)
 	return index.Entry{
 		Key: key, Size: info.Size, ModTime: mtime, Mode: 0o644,
-		ETag: info.Hash, State: index.Synced, ATime: now,
+		Hash: info.Hash, ETag: etag, State: index.Synced, ATime: now,
 	}, nil
 }
 
@@ -292,13 +352,13 @@ func (s *Store) Get(bucket, key string) (index.Entry, io.ReadCloser, error) {
 	if err != nil {
 		return index.Entry{}, nil, err
 	}
-	f, err := s.blobs.Open(e.ETag)
+	f, err := s.blobs.Open(e.Hash)
 	if err != nil {
 		// The index says it is there and the disk says otherwise. That
 		// is the one inconsistency worth shouting about, because it
 		// means either a scrub finding or someone deleting by hand.
 		s.svcLog.Error("object references a missing blob",
-			"bucket", bucket, "key", key, "hash", e.ETag)
+			"bucket", bucket, "key", key, "hash", e.Hash)
 		return index.Entry{}, nil, err
 	}
 	s.idx.Touch(bucket, key, time.Now())

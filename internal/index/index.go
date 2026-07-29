@@ -101,9 +101,14 @@ type Entry struct {
 	Size    int64     `json:"size"`
 	ModTime time.Time `json:"mtime"`
 	Mode    uint32    `json:"mode"`
-	// ETag is the hex sha256 of the content: the blob's address on the
+	// Hash is the hex sha256 of the content: the blob's address on the
 	// store, and the checksum the scrub verifies against.
-	ETag   string    `json:"etag"`
+	Hash string `json:"hash"`
+	// ETag is the S3 entity tag — the md5 for a whole-object upload,
+	// or "<md5 of the part md5s>-<count>" for a multipart one. It is
+	// kept only because clients compare it; nothing in tana relies on
+	// it, and nothing should: md5 is not a checksum tana would choose.
+	ETag   string    `json:"etag,omitempty"`
 	State  State     `json:"state"`
 	ATime  time.Time `json:"atime"`
 	Pinned bool      `json:"pinned"`

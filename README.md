@@ -131,7 +131,7 @@ Under construction. Milestones:
 - [x] **M0** config, CLI, index, host capability probe
 - [x] **M1** blob store: content addressing, journal, fsync discipline,
       refcounts, GC
-- [ ] **M2** S3 API with sigv4 — the twelve endpoints WordPress needs
+- [x] **M2** S3 API with sigv4 — the twelve endpoints WordPress needs
 - [ ] **M3** agent writeback queue and S3 client
 - [ ] **M4** FUSE passthrough mount and recall
 - [ ] **M5** eviction, pinning, caller-aware recall

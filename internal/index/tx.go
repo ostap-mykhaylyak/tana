@@ -3,6 +3,7 @@ package index
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -194,6 +195,31 @@ func (t *Tx) SetMeta(key string, value []byte) error {
 		return err
 	}
 	return mb.Put([]byte(key), value)
+}
+
+// DelMeta removes a value written by SetMeta.
+func (t *Tx) DelMeta(key string) error {
+	mb := t.tx.Bucket([]byte(metaBucket))
+	if mb == nil {
+		return nil
+	}
+	return mb.Delete([]byte(key))
+}
+
+// WalkMeta calls fn for every metadata key with the given prefix.
+func (t *Tx) WalkMeta(prefix string, fn func(key string, value []byte) error) error {
+	mb := t.tx.Bucket([]byte(metaBucket))
+	if mb == nil {
+		return nil
+	}
+	c := mb.Cursor()
+	p := []byte(prefix)
+	for k, v := c.Seek(p); k != nil && strings.HasPrefix(string(k), prefix); k, v = c.Next() {
+		if err := fn(string(k), append([]byte(nil), v...)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Meta reads a value written by SetMeta.

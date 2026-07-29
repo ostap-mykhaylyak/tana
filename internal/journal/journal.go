@@ -72,8 +72,13 @@ type Record struct {
 	Bucket string    `json:"bucket,omitempty"`
 	Key    string    `json:"key,omitempty"`
 	Hash   string    `json:"hash,omitempty"`
-	Size   int64     `json:"size,omitempty"`
-	MTime  time.Time `json:"mtime,omitempty"`
+	// ETag is the S3 entity tag the client was given. It is recorded so
+	// a replay hands back the same value the client already stored;
+	// recomputing it would be impossible for multipart objects, whose
+	// tag depends on how the upload happened to be split.
+	ETag  string    `json:"etag,omitempty"`
+	Size  int64     `json:"size,omitempty"`
+	MTime time.Time `json:"mtime,omitempty"`
 }
 
 // Journal is an append-only sequence of records across segment files.
